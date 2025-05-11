@@ -11,7 +11,7 @@ const Layout: React.FC = () => {
         <Outlet />
       </main>
       <footer className="py-4 px-4 text-center text-sm text-muted-foreground border-t border-white/10">
-        <p>&copy; {new Date().getFullYear()} Artist Prediction Market. All rights reserved.</p>
+        <p>&copy; {new Date().getFullYear()} Prophet. All rights reserved.</p>
       </footer>
     </div>
   );

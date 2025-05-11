@@ -1,9 +1,9 @@
 
 import React from 'react';
-import LeaderboardPage from './LeaderboardPage';
+import HomePage from './HomePage';
 
 const Index = () => {
-  return <LeaderboardPage />;
+  return <HomePage />;
 };
 
 export default Index;
