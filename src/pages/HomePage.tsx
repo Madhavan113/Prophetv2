@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Music, TrendingUp, Globe, Lambda, Pi } from 'lucide-react';
+import { Music, TrendingUp, Globe, ChartBar, User } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
@@ -64,7 +64,7 @@ const HomePage = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <Card className="glass-card hover-scale border-white/5">
             <CardContent className="p-6 space-y-4">
-              <Lambda size={32} className="mb-2" />
+              <Music size={32} className="mb-2" />
               <h3 className="text-xl font-bold">Harmonic Analysis</h3>
               <p className="text-muted-foreground">
                 Apollonian algorithms decode streaming patterns to identify rising talents before mainstream recognition.
@@ -84,7 +84,7 @@ const HomePage = () => {
           
           <Card className="glass-card hover-scale border-white/5">
             <CardContent className="p-6 space-y-4">
-              <Pi size={32} className="mb-2" />
+              <ChartBar size={32} className="mb-2" />
               <h3 className="text-xl font-bold">Pythian Oracle</h3>
               <p className="text-muted-foreground">
                 Predictive modeling identifies market inefficiencies in artist valuation before the industry catches on.

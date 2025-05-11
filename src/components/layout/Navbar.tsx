@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
-import { ChartBar, User, TrendingUp, Lambda, Globe, Music } from 'lucide-react';
+import { ChartBar, User, TrendingUp, Globe, Music } from 'lucide-react';
 
 const Navbar: React.FC = () => {
   const isMobile = useIsMobile();
@@ -22,7 +22,7 @@ const Navbar: React.FC = () => {
       <div className="container flex h-16 items-center px-4 sm:px-8">
         <div className="mr-4 flex">
           <Link to="/" className="flex items-center space-x-2">
-            <Lambda className="h-6 w-6 text-primary" />
+            <Music className="h-6 w-6 text-primary" />
             <span className="font-bold text-lg hidden sm:inline-block">PROPHET</span>
           </Link>
         </div>
