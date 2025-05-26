@@ -10,6 +10,8 @@ import "./ProphetToken.sol";
  * @dev ERC20 token representing an artist, with intrinsic value tied to Prophet tokens
  */
 contract ArtistToken is ERC20Base, Permissions {
+    // Role for bonding curve contract
+    bytes32 public constant BONDING_CURVE_ROLE = keccak256("BONDING_CURVE_ROLE");
     // Events
     event ProphetValueUpdated(uint256 previousValue, uint256 newValue);
     
@@ -74,5 +76,47 @@ contract ArtistToken is ERC20Base, Permissions {
     function requestProphetRegistration(uint256 initialProphetValue) external {
         // This function should be called by someone with admin rights on the Prophet contract
         prophetToken.registerArtistToken(address(this), artistName, initialProphetValue);
+    }
+    
+    /**
+     * @dev Mint tokens to an address (only callable by bonding curve or admin)
+     * @param to Address to mint tokens to
+     * @param amount Amount of tokens to mint
+     */
+    function mint(address to, uint256 amount) external {
+        require(
+            hasRole(BONDING_CURVE_ROLE, msg.sender) || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            "Not authorized to mint"
+        );
+        _mint(to, amount);
+    }
+    
+    /**
+     * @dev Burn tokens from an address with allowance (only callable by bonding curve or admin)
+     * @param from Address to burn tokens from
+     * @param amount Amount of tokens to burn
+     */
+    function burnFrom(address from, uint256 amount) external override {
+        require(
+            hasRole(BONDING_CURVE_ROLE, msg.sender) || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            "Not authorized to burn"
+        );
+        
+        // Check allowance if not burning own tokens and not admin
+        if (from != msg.sender && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            uint256 currentAllowance = allowance(from, msg.sender);
+            require(currentAllowance >= amount, "ERC20: burn amount exceeds allowance");
+            _approve(from, msg.sender, currentAllowance - amount);
+        }
+        
+        _burn(from, amount);
+    }
+    
+    /**
+     * @dev Grant bonding curve role to an address (only admin)
+     * @param bondingCurve Address of the bonding curve contract
+     */
+    function setBondingCurve(address bondingCurve) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        grantRole(BONDING_CURVE_ROLE, bondingCurve);
     }
 } 
