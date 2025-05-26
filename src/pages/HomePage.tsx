@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Music, TrendingUp, Globe, ChartBar, User } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import EventsDebug from '@/components/ui/EventsDebug';
 
 const HomePage = () => {
   return (
@@ -107,6 +108,11 @@ const HomePage = () => {
         </blockquote>
       </section>
       
+      {/* Debug Section - Temporary */}
+      <section className="py-12 border-t border-white/10">
+        <EventsDebug />
+      </section>
+
       {/* CTA Section */}
       <section className="text-center space-y-6 py-12 border-t border-white/10">
         <h2 className="text-3xl font-bold">Become a Prophet</h2>

@@ -10,6 +10,8 @@ import HomePage from "./pages/HomePage";
 import LeaderboardPage from "./pages/LeaderboardPage";
 import MarketsPage from "./pages/MarketsPage";
 import PortfolioPage from "./pages/PortfolioPage";
+import AdminPage from "./pages/AdminPage";
+import BondingCurvePage from "./pages/BondingCurvePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,6 +29,8 @@ const App = () => (
               <Route path="/leaderboard" element={<LeaderboardPage />} />
               <Route path="/markets" element={<MarketsPage />} />
               <Route path="/portfolio" element={<PortfolioPage />} />
+              <Route path="/admin" element={<AdminPage />} />
+              <Route path="/bonding-curve" element={<BondingCurvePage />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

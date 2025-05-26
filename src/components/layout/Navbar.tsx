@@ -1,7 +1,8 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { ChartBar, User, TrendingUp, Music } from 'lucide-react';
+import { ChartBar, User, TrendingUp, Music, Shield, Activity } from 'lucide-react';
+import { useIsAdmin } from '@/hooks/useIsAdmin';
 import { Button } from '@/components/ui/button';
 import {
   ConnectButton,
@@ -10,7 +11,9 @@ import {
   useSendTransaction,
 } from "thirdweb/react";
 import { getContract, prepareContractCall, toWei } from "thirdweb";
-import { client, chain, PROPHET_TOKEN_ADDRESS } from "@/lib/thirdweb";
+import { client, chain } from "@/lib/thirdweb";
+
+const PROPHET_TOKEN_ADDRESS = "0xa4744fef305d3187c7862b49a6eefc69caa63272";
 
 function ProphetTokenBalance() {
   const account = useActiveAccount();
@@ -143,6 +146,7 @@ function BuyProphetTokens() {
 
 const Navbar: React.FC = () => {
   const isMobile = useIsMobile();
+  const { isAdmin } = useIsAdmin();
 
   return (
     <header className="bg-card border-b border-border sticky top-0 z-50">
@@ -188,6 +192,36 @@ const Navbar: React.FC = () => {
                 {isMobile ? <User size={20} /> : "Portfolio"}
               </Link>
             </li>
+            {isAdmin && (
+              <>
+                <li>
+                  <Link 
+                    to="/admin" 
+                    className="px-3 py-2 text-sm font-medium hover:text-primary transition-colors flex items-center gap-1"
+                  >
+                    {isMobile ? <Shield size={20} /> : (
+                      <>
+                        <Shield size={16} />
+                        Admin
+                      </>
+                    )}
+                  </Link>
+                </li>
+                <li>
+                  <Link 
+                    to="/bonding-curve" 
+                    className="px-3 py-2 text-sm font-medium hover:text-primary transition-colors flex items-center gap-1"
+                  >
+                    {isMobile ? <TrendingUp size={20} /> : (
+                      <>
+                        <TrendingUp size={16} />
+                        Curves
+                      </>
+                    )}
+                  </Link>
+                </li>
+              </>
+            )}
           </ul>
         </nav>
         

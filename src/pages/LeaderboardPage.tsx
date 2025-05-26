@@ -1,249 +1,567 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { TrendingUp, TrendingDown, ChevronUp, ChevronDown, PieChart } from 'lucide-react';
-import { ChartContainer, ChartLegend, ChartLegendContent } from '@/components/ui/chart';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Trophy, Medal, Award, TrendingUp, TrendingDown, Crown, Search, DollarSign, Activity } from 'lucide-react';
+import { useReadContract } from "thirdweb/react";
+import { getContract, toEther } from "thirdweb";
+import { client, chain } from "@/lib/thirdweb";
+import { useTokenExplorer, useTokenDetails } from "@/hooks/useTokenExplorer";
+import { useBlockchainEvents } from "@/hooks/useBlockchainEvents";
 
-// Mock data for leaderboard
-const artistData = [
-  { id: 1, name: "KAWS", price: 1458.92, change: 12.5, volume: 92500 },
-  { id: 2, name: "Banksy", price: 2893.41, change: -3.2, volume: 143200 },
-  { id: 3, name: "Yayoi Kusama", price: 1782.35, change: 8.7, volume: 87600 },
-  { id: 4, name: "Takashi Murakami", price: 934.28, change: 5.1, volume: 65800 },
-  { id: 5, name: "Damien Hirst", price: 1243.87, change: -1.8, volume: 72400 },
-  { id: 6, name: "Jeff Koons", price: 3214.59, change: 0.9, volume: 118900 },
-  { id: 7, name: "Jean-Michel Basquiat", price: 4582.16, change: 7.3, volume: 165400 },
-  { id: 8, name: "Ai Weiwei", price: 876.34, change: -4.5, volume: 58700 },
-  { id: 9, name: "Marina Abramović", price: 723.91, change: 15.2, volume: 47800 },
-  { id: 10, name: "Olafur Eliasson", price: 1156.72, change: -2.7, volume: 63900 },
-];
+const BONDING_CURVE_ADDRESS = "0xAF9f3c79c6b8B051bc02cBCB0ab0a19eA2057d07";
+const PROPHET_TOKEN_ADDRESS = "0xa4744fef305d3187c7862b49a6eefc69caa63272";
 
-// Trending artists for ticker
-const trendingArtists = [
-  "KAWS +12.5%",
-  "Marina Abramović +15.2%",
-  "Yayoi Kusama +8.7%",
-  "Jean-Michel Basquiat +7.3%",
-  "Takashi Murakami +5.1%",
-];
-
-// Volume data for chart
-const volumeData = artistData
-  .sort((a, b) => b.volume - a.volume)
-  .slice(0, 5)
-  .map(artist => ({
-    name: artist.name,
-    volume: artist.volume / 1000,
-  }));
-
-const chartConfig = {
-  white: {
-    color: "#FFFFFF"
-  },
-  gray: {
-    color: "#888888"
-  }
-};
+interface UserStatsDisplay {
+  address: string;
+  totalPortfolioValue: number;
+  prophetBalance: number;
+  topHoldings: Array<{
+    tokenAddress: string;
+    name: string;
+    symbol: string;
+    balance: number;
+    value: number;
+    percentage: number;
+  }>;
+  totalTokensHeld: number;
+  rank: number;
+}
 
 const LeaderboardPage: React.FC = () => {
-  const [sortBy, setSortBy] = useState<'price' | 'change' | 'volume'>('change');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [visibleItems, setVisibleItems] = useState<number[]>([]);
+  const [selectedTab, setSelectedTab] = useState('portfolio');
+  const [searchTerm, setSearchTerm] = useState('');
+  const { allArtistTokens, tokensLoading, bondingCurve } = useTokenExplorer();
+  const { 
+    userStats, 
+    priceDataMap, 
+    tokenCreatedEvents,
+    getUserTransactions,
+    isLoading: eventsLoading 
+  } = useBlockchainEvents();
 
+  // Get token names from creation events
+  const tokenNameMap = useMemo(() => {
+    const map = new Map<string, { name: string; symbol: string }>();
+    tokenCreatedEvents.forEach(event => {
+      map.set(event.artistTokenAddress.toLowerCase(), {
+        name: event.artistName,
+        symbol: `${event.artistName.toUpperCase().slice(0, 4)}` // Create symbol from name
+      });
+    });
+    return map;
+  }, [tokenCreatedEvents]);
+
+  // Fetch market cap for each token
+  const [marketData, setMarketData] = useState<Array<{
+    tokenAddress: string;
+    name: string;
+    symbol: string;
+    marketCap: number;
+    totalSupply: number;
+    currentPrice: number;
+  }>>([]);
+
+  // Custom hook to fetch reserves for a token
+  const useTokenReserves = (tokenAddress: string) => {
+    return useReadContract({
+      contract: bondingCurve,
+      method: "function prophetReserves(address) view returns (uint256)",
+      params: [tokenAddress]
+    });
+  };
+
+  // Fetch market data for all tokens
   useEffect(() => {
-    // Staggered animation for table rows
-    const timer = setTimeout(() => {
-      const ids = artistData.map(artist => artist.id);
-      setVisibleItems(ids);
-    }, 100);
+    const fetchMarketData = async () => {
+      const { readContract } = await import("thirdweb");
+      const { getContract } = await import("thirdweb");
+      
+      const data = await Promise.all(
+        allArtistTokens.map(async (tokenAddress) => {
+          try {
+            // Get token contract
+            const tokenContract = getContract({
+              client,
+              chain,
+              address: tokenAddress,
+            });
+            
+            // Fetch token details directly from contract
+            const [name, symbol, totalSupply] = await Promise.all([
+              readContract({
+                contract: tokenContract,
+                method: "function name() view returns (string)"
+              }),
+              readContract({
+                contract: tokenContract,
+                method: "function symbol() view returns (string)"
+              }),
+              readContract({
+                contract: tokenContract,
+                method: "function totalSupply() view returns (uint256)"
+              })
+            ]);
+            
+            // Get price data
+            const priceData = priceDataMap.get(tokenAddress.toLowerCase());
+            
+            // Get reserves (actual market cap)
+            const reserves = await readContract({
+              contract: bondingCurve,
+              method: "function prophetReserves(address) view returns (uint256)",
+              params: [tokenAddress]
+            });
+            
+            const marketCap = reserves ? Number(toEther(reserves)) : 0;
+            
+            return {
+              tokenAddress,
+              name: name || 'Unknown',
+              symbol: symbol || 'UNK',
+              marketCap,
+              totalSupply: totalSupply ? Number(toEther(totalSupply)) : 0,
+              currentPrice: priceData ? Number(toEther(priceData.currentPrice)) : 0
+            };
+          } catch (error) {
+            console.error(`Error fetching market data for ${tokenAddress}:`, error);
+            return null;
+          }
+        })
+      );
+      
+      setMarketData(data.filter(d => d !== null && d.marketCap > 0).sort((a, b) => b.marketCap - a.marketCap));
+    };
 
-    return () => clearTimeout(timer);
-  }, []);
-
-  const sortedArtists = [...artistData].sort((a, b) => {
-    if (sortOrder === 'asc') {
-      return a[sortBy] - b[sortBy];
-    } else {
-      return b[sortBy] - a[sortBy];
+    if (allArtistTokens.length > 0 && bondingCurve) {
+      fetchMarketData();
     }
-  });
+  }, [allArtistTokens, priceDataMap, bondingCurve]);
 
-  const handleSort = (key: 'price' | 'change' | 'volume') => {
-    if (sortBy === key) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortBy(key);
-      setSortOrder('desc');
+  // Calculate leaderboard data from real blockchain events
+  const leaderboardData = useMemo((): UserStatsDisplay[] => {
+    if (!userStats.length || !allArtistTokens.length || !marketData.length) return [];
+
+    // Convert blockchain UserStats to display format
+    const displayData: UserStatsDisplay[] = userStats.map((stats, index) => {
+      let totalPortfolioValue = 0;
+      const topHoldings: UserStatsDisplay['topHoldings'] = [];
+
+      // Get user's transactions to calculate current holdings
+      const userTransactions = getUserTransactions(stats.address);
+      const holdingsByToken = new Map<string, number>();
+
+      // Calculate current holdings from transaction history
+      userTransactions.forEach(tx => {
+        const current = holdingsByToken.get(tx.artistToken.toLowerCase()) || 0;
+        if (tx.type === 'buy') {
+          holdingsByToken.set(tx.artistToken.toLowerCase(), current + Number(toEther(tx.artistAmount)));
+        } else {
+          holdingsByToken.set(tx.artistToken.toLowerCase(), current - Number(toEther(tx.artistAmount)));
+        }
+      });
+
+      // Calculate portfolio value using current prices
+      holdingsByToken.forEach((balance, tokenAddress) => {
+        if (balance <= 0) return; // Skip if no holdings
+
+        const priceData = priceDataMap.get(tokenAddress);
+        // Find token info from marketData which has the real names
+        const tokenInfo = marketData.find(m => m.tokenAddress.toLowerCase() === tokenAddress);
+        
+        if (priceData && tokenInfo) {
+          const currentPrice = Number(toEther(priceData.currentPrice));
+          const value = balance * currentPrice;
+          totalPortfolioValue += value;
+
+          topHoldings.push({
+            tokenAddress,
+            name: tokenInfo.name,
+            symbol: tokenInfo.symbol,
+            balance,
+            value,
+            percentage: 0 // Will be calculated later
+          });
+        }
+      });
+
+      // Calculate percentages and sort
+      topHoldings.forEach(holding => {
+        holding.percentage = totalPortfolioValue > 0 ? (holding.value / totalPortfolioValue) * 100 : 0;
+      });
+      topHoldings.sort((a, b) => b.value - a.value);
+
+      return {
+        address: stats.address,
+        totalPortfolioValue,
+        prophetBalance: Number(toEther(stats.totalBought)) - Number(toEther(stats.totalSold)), // Net PRPH position
+        topHoldings: topHoldings.slice(0, 3), // Top 3 holdings
+        totalTokensHeld: topHoldings.reduce((sum, holding) => sum + holding.balance, 0),
+        rank: 0 // Will be set after sorting
+      };
+    });
+
+    // Filter out users with no portfolio value and sort
+    const filteredData = displayData.filter(user => user.totalPortfolioValue > 0);
+    filteredData.sort((a, b) => b.totalPortfolioValue - a.totalPortfolioValue);
+    
+    // Assign ranks
+    filteredData.forEach((user, index) => {
+      user.rank = index + 1;
+    });
+
+    return filteredData;
+  }, [userStats, allArtistTokens, priceDataMap, marketData, getUserTransactions]);
+
+  // Filter leaderboard based on search
+  const filteredLeaderboard = leaderboardData.filter(user => 
+    user.address.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  if (tokensLoading || eventsLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="flex items-center justify-center min-h-[50vh]">
+          <div className="text-center space-y-4">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+            <p className="text-muted-foreground">Loading leaderboard...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (allArtistTokens.length === 0) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+          <h1 className="text-2xl font-bold">Leaderboard</h1>
+        </div>
+        
+        <Card className="glass-card border-white/10">
+          <CardContent className="p-8 text-center">
+            <div className="space-y-4">
+              <Trophy className="h-12 w-12 text-muted-foreground mx-auto" />
+              <div>
+                <h3 className="text-lg font-semibold">No Markets Yet</h3>
+                <p className="text-muted-foreground">Create artist tokens to start building the leaderboard</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+        <div>
+          <h1 className="text-2xl font-bold">Leaderboard</h1>
+          <p className="text-muted-foreground">Top performers in the Prophet ecosystem</p>
+        </div>
+        
+        <div className="relative w-full sm:w-auto">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search addresses..."
+            className="pl-8 bg-card/50 border-white/10"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Market Stats */}
+      <div className="grid gap-6 grid-cols-1 md:grid-cols-4">
+        <Card className="glass-card border-white/10">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <Activity className="h-8 w-8 text-primary" />
+              <div>
+                <p className="text-2xl font-bold">{allArtistTokens.length}</p>
+                <p className="text-sm text-muted-foreground">Active Markets</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card border-white/10">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <DollarSign className="h-8 w-8 text-green-400" />
+              <div>
+                <p className="text-2xl font-bold">
+                  {leaderboardData.reduce((sum, user) => sum + user.totalPortfolioValue, 0).toFixed(0)}
+                </p>
+                <p className="text-sm text-muted-foreground">Total Market Value</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card border-white/10">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <Trophy className="h-8 w-8 text-yellow-400" />
+              <div>
+                <p className="text-2xl font-bold">{leaderboardData.length}</p>
+                <p className="text-sm text-muted-foreground">Active Traders</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card border-white/10">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <TrendingUp className="h-8 w-8 text-blue-400" />
+              <div>
+                <p className="text-2xl font-bold">
+                  {leaderboardData.length > 0 ? leaderboardData[0].totalPortfolioValue.toFixed(0) : '0'}
+                </p>
+                <p className="text-sm text-muted-foreground">Top Portfolio</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Leaderboard Tabs */}
+      <Tabs defaultValue="portfolio" onValueChange={setSelectedTab}>
+        <TabsList className="grid grid-cols-2 w-full sm:w-[400px]">
+          <TabsTrigger value="portfolio">Portfolio Value</TabsTrigger>
+          <TabsTrigger value="diversity">Top Markets</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="portfolio" className="mt-6">
+          <LeaderboardList 
+            users={filteredLeaderboard} 
+            sortBy="portfolio"
+            title="Top Portfolios by Value"
+          />
+        </TabsContent>
+        
+        <TabsContent value="diversity" className="mt-6">
+          <MarketLeaderboard 
+            markets={marketData}
+            title="Top Markets by Market Cap"
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+};
+
+// Market Leaderboard Component
+interface MarketLeaderboardProps {
+  markets: Array<{
+    tokenAddress: string;
+    name: string;
+    symbol: string;
+    marketCap: number;
+    totalSupply: number;
+    currentPrice: number;
+  }>;
+  title: string;
+}
+
+const MarketLeaderboard: React.FC<MarketLeaderboardProps> = ({ markets, title }) => {
+  const getRankIcon = (rank: number) => {
+    switch (rank) {
+      case 1: return <Crown className="h-6 w-6 text-yellow-400" />;
+      case 2: return <Medal className="h-6 w-6 text-gray-400" />;
+      case 3: return <Award className="h-6 w-6 text-amber-600" />;
+      default: return <span className="text-lg font-bold text-muted-foreground">#{rank}</span>;
+    }
+  };
+
+  const getRankBorder = (rank: number) => {
+    switch (rank) {
+      case 1: return 'border-yellow-500/30 bg-yellow-500/5';
+      case 2: return 'border-gray-400/30 bg-gray-400/5';
+      case 3: return 'border-amber-600/30 bg-amber-600/5';
+      default: return 'border-white/10';
     }
   };
 
   return (
-    <div className="space-y-6">
-      <div className="overflow-hidden bg-card rounded-lg py-2 mb-6 ticker-container border border-white/10">
-        <div className="ticker-content whitespace-nowrap inline-block">
-          {[...trendingArtists, ...trendingArtists, ...trendingArtists].map((artist, index) => (
-            <span key={index} className="mx-6 text-primary font-medium">
-              {artist}
-            </span>
+    <Card className="glass-card border-white/10">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Trophy className="h-5 w-5" />
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          {markets.map((market, index) => (
+            <div key={market.tokenAddress} className={`p-4 rounded-lg border transition-all hover:bg-card/50 ${getRankBorder(index + 1)}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center justify-center w-12 h-12">
+                    {getRankIcon(index + 1)}
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold text-lg">{market.name}</h4>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge variant="outline" className="border-white/20 text-xs">
+                        {market.symbol}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {market.tokenAddress.slice(0, 8)}...{market.tokenAddress.slice(-6)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-right">
+                  <div className="flex items-center gap-6">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Market Cap</p>
+                      <p className="font-semibold text-lg">
+                        {market.marketCap.toFixed(2)} PRPH
+                      </p>
+                    </div>
+                    
+                    <div>
+                      <p className="text-sm text-muted-foreground">Current Price</p>
+                      <p className="font-semibold">
+                        {market.currentPrice.toFixed(6)} PRPH
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           ))}
         </div>
-      </div>
-      
-      <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-        <Card className="glass-card hover-scale shadow-lg animate-fadeIn border border-white/10">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <TrendingUp size={20} className="text-white" /> Top Performer
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold">Marina Abramović</h3>
-                <p className="text-muted-foreground">$723.91</p>
-              </div>
-              <div className="text-white flex items-center font-semibold">
-                <TrendingUp className="mr-1" size={20} />
-                <span className="animate-pulse-slow">+15.2%</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="glass-card hover-scale shadow-lg animate-fadeIn border border-white/10" style={{ animationDelay: "150ms" }}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <PieChart size={20} className="text-white" /> Highest Volume
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-bold">Jean-Michel Basquiat</h3>
-                <p className="text-muted-foreground">$4,582.16</p>
-              </div>
-              <div className="text-white flex items-center font-semibold">
-                <span className="shimmer px-2 py-1 rounded">165.4K</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="glass-card hover-scale shadow-lg animate-fadeIn md:col-span-2 lg:col-span-1 border border-white/10" style={{ animationDelay: "300ms" }}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg">Market Overview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Market Cap</span>
-                <span className="font-mono">$189.7M</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">24h Volume</span>
-                <span className="font-mono">$12.5M</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Active Artists</span>
-                <span className="font-mono">512</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      </CardContent>
+    </Card>
+  );
+};
 
-      <ChartContainer 
-        className="glass-card border border-white/10 p-4 rounded-lg mt-6 shadow-lg animate-fadeIn" 
-        config={chartConfig}
-        style={{ animationDelay: "450ms", height: "250px" }}
-      >
-        <BarChart data={volumeData}>
-          <XAxis dataKey="name" stroke="#FFFFFF" />
-          <YAxis stroke="#FFFFFF" />
-          <Tooltip 
-            contentStyle={{ 
-              background: 'rgba(0, 0, 0, 0.8)', 
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              borderRadius: '4px',
-              color: 'white'
-            }} 
-          />
-          <Bar dataKey="volume" fill="#FFFFFF" radius={[4, 4, 0, 0]} />
-        </BarChart>
-      </ChartContainer>
+// Leaderboard List Component
+interface LeaderboardListProps {
+  users: UserStatsDisplay[];
+  sortBy: 'portfolio' | 'holdings' | 'diversity';
+  title: string;
+}
 
-      <Card className="glass-card shadow-2xl animate-fadeIn border border-white/10" style={{ animationDelay: "600ms" }}>
-        <CardHeader>
-          <CardTitle className="text-xl">Artist Leaderboard</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-white/10">
-                  <th className="text-left py-3 px-4">#</th>
-                  <th className="text-left py-3 px-4">Artist</th>
-                  <th 
-                    className="text-right py-3 px-4 cursor-pointer hover:text-primary" 
-                    onClick={() => handleSort('price')}
-                  >
-                    <div className="flex items-center justify-end gap-1">
-                      Price
-                      {sortBy === 'price' && (
-                        sortOrder === 'asc' ? <ChevronUp size={16} /> : <ChevronDown size={16} />
-                      )}
-                    </div>
-                  </th>
-                  <th 
-                    className="text-right py-3 px-4 cursor-pointer hover:text-primary" 
-                    onClick={() => handleSort('change')}
-                  >
-                    <div className="flex items-center justify-end gap-1">
-                      24h Change
-                      {sortBy === 'change' && (
-                        sortOrder === 'asc' ? <ChevronUp size={16} /> : <ChevronDown size={16} />
-                      )}
-                    </div>
-                  </th>
-                  <th 
-                    className="text-right py-3 px-4 cursor-pointer hover:text-primary" 
-                    onClick={() => handleSort('volume')}
-                  >
-                    <div className="flex items-center justify-end gap-1">
-                      Volume
-                      {sortBy === 'volume' && (
-                        sortOrder === 'asc' ? <ChevronUp size={16} /> : <ChevronDown size={16} />
-                      )}
-                    </div>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedArtists.map((artist, index) => (
-                  <tr 
-                    key={artist.id} 
-                    className={`border-b border-white/5 hover:bg-white/5 transition-all ${visibleItems.includes(artist.id) ? 'opacity-100' : 'opacity-0'}`}
-                    style={{ 
-                      transition: 'all 0.3s ease', 
-                      transitionDelay: `${index * 100}ms`
-                    }}
-                  >
-                    <td className="py-3 px-4">{index + 1}</td>
-                    <td className="py-3 px-4 font-medium">{artist.name}</td>
-                    <td className="text-right py-3 px-4 font-mono">${artist.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                    <td className={`text-right py-3 px-4 font-mono ${artist.change >= 0 ? 'text-white' : 'text-white/70'} flex items-center justify-end`}>
-                      {artist.change >= 0 ? <TrendingUp size={16} className="mr-1" /> : <TrendingDown size={16} className="mr-1" />}
-                      {artist.change >= 0 ? '+' : ''}{artist.change}%
-                    </td>
-                    <td className="text-right py-3 px-4 font-mono">{(artist.volume / 1000).toFixed(1)}K</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+const LeaderboardList: React.FC<LeaderboardListProps> = ({ users, sortBy, title }) => {
+  const getRankIcon = (rank: number) => {
+    switch (rank) {
+      case 1: return <Crown className="h-6 w-6 text-yellow-400" />;
+      case 2: return <Medal className="h-6 w-6 text-gray-400" />;
+      case 3: return <Award className="h-6 w-6 text-amber-600" />;
+      default: return <span className="text-lg font-bold text-muted-foreground">#{rank}</span>;
+    }
+  };
+
+  const getRankBorder = (rank: number) => {
+    switch (rank) {
+      case 1: return 'border-yellow-500/30 bg-yellow-500/5';
+      case 2: return 'border-gray-400/30 bg-gray-400/5';
+      case 3: return 'border-amber-600/30 bg-amber-600/5';
+      default: return 'border-white/10';
+    }
+  };
+
+  return (
+    <Card className="glass-card border-white/10">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Trophy className="h-5 w-5" />
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          {users.map((user, index) => (
+            <UserCard 
+              key={user.address} 
+              user={user} 
+              rank={index + 1}
+              rankIcon={getRankIcon(index + 1)}
+              borderClass={getRankBorder(index + 1)}
+              sortBy={sortBy}
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// Individual User Card Component
+interface UserCardProps {
+  user: UserStatsDisplay;
+  rank: number;
+  rankIcon: React.ReactNode;
+  borderClass: string;
+  sortBy: 'portfolio' | 'holdings' | 'diversity';
+}
+
+const UserCard: React.FC<UserCardProps> = ({ user, rank, rankIcon, borderClass, sortBy }) => {
+  return (
+    <div className={`p-4 rounded-lg border transition-all hover:bg-card/50 ${borderClass}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center justify-center w-12 h-12">
+            {rankIcon}
           </div>
-        </CardContent>
-      </Card>
+          
+          <div>
+            <h4 className="font-semibold font-mono text-sm">
+              {user.address.slice(0, 8)}...{user.address.slice(-6)}
+            </h4>
+            <div className="flex items-center gap-2 mt-1">
+              <Badge variant="outline" className="border-white/20 text-xs">
+                {user.topHoldings.length} tokens
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                Total: {user.totalTokensHeld.toFixed(1)} tokens
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="text-right">
+          <div className="flex items-center gap-6">
+            <div>
+              <p className="text-sm text-muted-foreground">Portfolio Value</p>
+              <p className="font-semibold text-lg">
+                {user.totalPortfolioValue.toFixed(2)} PRPH
+              </p>
+            </div>
+            
+            <div>
+              <p className="text-sm text-muted-foreground">Prophet Balance</p>
+              <p className="font-semibold">
+                {user.prophetBalance.toFixed(2)} PRPH
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Top Holdings */}
+      {user.topHoldings.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-white/10">
+          <p className="text-sm text-muted-foreground mb-2">Top Holdings:</p>
+          <div className="flex gap-2 flex-wrap">
+            {user.topHoldings.map((holding, index) => (
+              <Badge key={index} variant="secondary" className="text-xs">
+                {holding.symbol}: {holding.balance.toFixed(1)} ({holding.percentage.toFixed(1)}%)
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
