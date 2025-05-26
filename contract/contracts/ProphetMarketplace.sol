@@ -17,30 +17,19 @@ interface ProphetTokenInterface {
 
 /**
  * @title ProphetMarketplace
- * @dev A marketplace for exchanging Prophet tokens for artist tokens with orderbook functionality
+ * @dev A decentralized marketplace for exchanging Prophet tokens for artist tokens using orderbook
  */
 contract ProphetMarketplace is Permissions, ContractMetadata, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // Events
-    event ArtistTokenPurchased(address indexed buyer, address indexed artistToken, uint256 prophetAmount, uint256 artistTokenAmount);
-    event ArtistTokenSold(address indexed seller, address indexed artistToken, uint256 artistTokenAmount, uint256 prophetAmount);
-    event ExchangeRateSet(address indexed artistToken, uint256 prophetAmount, uint256 artistTokenAmount);
-    event OrderCreated(uint256 indexed orderId, address indexed creator, address indexed artistToken, bool isBuyOrder, uint256 prophetAmount, uint256 artistTokenAmount);
+    event OrderCreated(uint256 indexed orderId, address indexed creator, address indexed artistToken, bool isBuyOrder, uint256 prophetAmount, uint256 artistTokenAmount, uint256 pricePerToken);
     event OrderCancelled(uint256 indexed orderId);
-    event OrderFilled(uint256 indexed orderId, address indexed filler, uint256 filledAmount);
+    event OrderFilled(uint256 indexed orderId, address indexed filler, uint256 filledAmount, uint256 remainingAmount);
+    event Trade(address indexed buyer, address indexed seller, address indexed artistToken, uint256 prophetAmount, uint256 artistTokenAmount, uint256 pricePerToken);
 
     // State variables
     ProphetTokenInterface public prophetToken;
-    
-    // Exchange rate mapping for artist tokens (Prophet amount to Artist token amount)
-    struct ExchangeRate {
-        uint256 prophetAmount;    // How many Prophet tokens
-        uint256 artistTokenAmount; // How many artist tokens you get
-        bool exists;
-    }
-    
-    mapping(address => ExchangeRate) public exchangeRates;
     
     // Order struct for orderbook
     struct Order {
@@ -50,14 +39,19 @@ contract ProphetMarketplace is Permissions, ContractMetadata, ReentrancyGuard {
         bool isBuyOrder;         // true = buy artist tokens with Prophet, false = sell artist tokens for Prophet
         uint256 prophetAmount;   // Total Prophet tokens in the order
         uint256 artistTokenAmount; // Total artist tokens in the order
-        uint256 filled;          // Amount already filled
+        uint256 filled;          // Amount already filled (in the same unit as the order type)
+        uint256 pricePerToken;   // Price per artist token in Prophet tokens (scaled by 1e18)
         bool active;             // Whether the order is still active
+        uint256 timestamp;       // When the order was created
     }
     
     // Orderbook storage
     uint256 public nextOrderId = 1;
     mapping(uint256 => Order) public orders;
     mapping(address => mapping(bool => uint256[])) public artistTokenOrders; // artistToken => isBuyOrder => orderIds
+    
+    // Price scaling factor for precision
+    uint256 public constant PRICE_SCALE = 1e18;
     
     /**
      * @dev Constructor for the marketplace
@@ -69,96 +63,10 @@ contract ProphetMarketplace is Permissions, ContractMetadata, ReentrancyGuard {
     }
 
     /**
-     * @dev Set the exchange rate for an artist token
-     * @param artistTokenAddress The address of the artist token
-     * @param prophetAmount Amount of Prophet tokens
-     * @param artistTokenAmount Amount of artist tokens
-     */
-    function setExchangeRate(
-        address artistTokenAddress,
-        uint256 prophetAmount,
-        uint256 artistTokenAmount
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(prophetToken.isArtistToken(artistTokenAddress), "Not a registered artist token");
-        require(prophetAmount > 0, "Prophet amount must be greater than 0");
-        require(artistTokenAmount > 0, "Artist token amount must be greater than 0");
-        
-        exchangeRates[artistTokenAddress] = ExchangeRate({
-            prophetAmount: prophetAmount,
-            artistTokenAmount: artistTokenAmount,
-            exists: true
-        });
-        
-        emit ExchangeRateSet(artistTokenAddress, prophetAmount, artistTokenAmount);
-    }
-    
-    /**
-     * @dev Buy artist tokens using Prophet tokens
-     * @param artistTokenAddress The address of the artist token to buy
-     * @param prophetAmount The amount of Prophet tokens to spend
-     */
-    function buyArtistTokens(
-        address artistTokenAddress,
-        uint256 prophetAmount
-    ) external nonReentrant {
-        require(prophetToken.isArtistToken(artistTokenAddress), "Not a registered artist token");
-        require(exchangeRates[artistTokenAddress].exists, "Exchange rate not set");
-        
-        ExchangeRate memory rate = exchangeRates[artistTokenAddress];
-        
-        // Calculate how many artist tokens the user will receive
-        uint256 artistTokenAmount = (prophetAmount * rate.artistTokenAmount) / rate.prophetAmount;
-        require(artistTokenAmount > 0, "Artist token amount too small");
-        
-        // Check if the marketplace has enough artist tokens
-        IERC20 artistToken = IERC20(artistTokenAddress);
-        require(artistToken.balanceOf(address(this)) >= artistTokenAmount, "Insufficient artist token liquidity");
-        
-        // Transfer Prophet tokens from user to this contract
-        prophetToken.transferFrom(msg.sender, address(this), prophetAmount);
-        
-        // Transfer artist tokens to the user
-        artistToken.safeTransfer(msg.sender, artistTokenAmount);
-        
-        emit ArtistTokenPurchased(msg.sender, artistTokenAddress, prophetAmount, artistTokenAmount);
-    }
-    
-    /**
-     * @dev Sell artist tokens to get Prophet tokens
-     * @param artistTokenAddress The address of the artist token to sell
-     * @param artistTokenAmount The amount of artist tokens to sell
-     */
-    function sellArtistTokens(
-        address artistTokenAddress,
-        uint256 artistTokenAmount
-    ) external nonReentrant {
-        require(prophetToken.isArtistToken(artistTokenAddress), "Not a registered artist token");
-        require(exchangeRates[artistTokenAddress].exists, "Exchange rate not set");
-        
-        ExchangeRate memory rate = exchangeRates[artistTokenAddress];
-        
-        // Calculate how many Prophet tokens the user will receive
-        uint256 prophetAmount = (artistTokenAmount * rate.prophetAmount) / rate.artistTokenAmount;
-        require(prophetAmount > 0, "Prophet amount too small");
-        
-        // Check if the marketplace has enough Prophet tokens
-        require(prophetToken.balanceOf(address(this)) >= prophetAmount, "Insufficient Prophet token liquidity");
-        
-        // Transfer artist tokens from user to this contract
-        IERC20 artistToken = IERC20(artistTokenAddress);
-        artistToken.safeTransferFrom(msg.sender, address(this), artistTokenAmount);
-        
-        // Transfer Prophet tokens to the user
-        prophetToken.transfer(msg.sender, prophetAmount);
-        
-        emit ArtistTokenSold(msg.sender, artistTokenAddress, artistTokenAmount, prophetAmount);
-    }
-    
-    /**
-     * @dev Create a new buy or sell order
+     * @dev Create a new buy or sell order with automatic matching
      * @param artistTokenAddress The artist token address to trade
      * @param isBuyOrder Whether this is a buy order (true) or sell order (false)
-     * @param prophetAmount Amount of Prophet tokens
+     * @param prophetAmount Amount of Prophet tokens (for buy orders) or expected Prophet tokens (for sell orders)
      * @param artistTokenAmount Amount of artist tokens
      */
     function createOrder(
@@ -171,100 +79,153 @@ contract ProphetMarketplace is Permissions, ContractMetadata, ReentrancyGuard {
         require(prophetAmount > 0, "Prophet amount must be greater than 0");
         require(artistTokenAmount > 0, "Artist token amount must be greater than 0");
         
-        // Create the order
-        uint256 orderId = nextOrderId++;
+        // Calculate price per token
+        uint256 pricePerToken = (prophetAmount * PRICE_SCALE) / artistTokenAmount;
         
-        orders[orderId] = Order({
-            id: orderId,
-            creator: msg.sender,
-            artistToken: artistTokenAddress,
-            isBuyOrder: isBuyOrder,
-            prophetAmount: prophetAmount,
-            artistTokenAmount: artistTokenAmount,
-            filled: 0,
-            active: true
-        });
+        // Try to match with existing orders first
+        uint256 remainingProphetAmount = prophetAmount;
+        uint256 remainingArtistAmount = artistTokenAmount;
         
-        // Add order to the artist token's order list
-        artistTokenOrders[artistTokenAddress][isBuyOrder].push(orderId);
+        (remainingProphetAmount, remainingArtistAmount) = _matchOrder(
+            artistTokenAddress,
+            isBuyOrder,
+            remainingProphetAmount,
+            remainingArtistAmount,
+            pricePerToken
+        );
         
-        // Handle token transfers based on order type
-        if (isBuyOrder) {
-            // If buying artist tokens with Prophet, lock the Prophet tokens
-            prophetToken.transferFrom(msg.sender, address(this), prophetAmount);
-        } else {
-            // If selling artist tokens for Prophet, lock the artist tokens
-            IERC20(artistTokenAddress).safeTransferFrom(msg.sender, address(this), artistTokenAmount);
+        // If there's remaining amount, create a new order
+        if (remainingArtistAmount > 0 && remainingProphetAmount > 0) {
+            uint256 orderId = nextOrderId++;
+            
+            orders[orderId] = Order({
+                id: orderId,
+                creator: msg.sender,
+                artistToken: artistTokenAddress,
+                isBuyOrder: isBuyOrder,
+                prophetAmount: remainingProphetAmount,
+                artistTokenAmount: remainingArtistAmount,
+                filled: 0,
+                pricePerToken: pricePerToken,
+                active: true,
+                timestamp: block.timestamp
+            });
+            
+            // Add order to the artist token's order list
+            artistTokenOrders[artistTokenAddress][isBuyOrder].push(orderId);
+            
+            // Handle token transfers based on order type
+            if (isBuyOrder) {
+                // If buying artist tokens with Prophet, lock the Prophet tokens
+                prophetToken.transferFrom(msg.sender, address(this), remainingProphetAmount);
+            } else {
+                // If selling artist tokens for Prophet, lock the artist tokens
+                IERC20(artistTokenAddress).safeTransferFrom(msg.sender, address(this), remainingArtistAmount);
+            }
+            
+            emit OrderCreated(orderId, msg.sender, artistTokenAddress, isBuyOrder, remainingProphetAmount, remainingArtistAmount, pricePerToken);
         }
-        
-        emit OrderCreated(orderId, msg.sender, artistTokenAddress, isBuyOrder, prophetAmount, artistTokenAmount);
     }
-    
+
     /**
-     * @dev Fill an existing order (partial fills allowed)
-     * @param orderId The ID of the order to fill
-     * @param fillAmount The amount to fill (in artist tokens for buy orders, in Prophet tokens for sell orders)
+     * @dev Internal function to match orders automatically
      */
-    function fillOrder(
-        uint256 orderId,
-        uint256 fillAmount
-    ) external nonReentrant {
-        require(orderId < nextOrderId, "Order does not exist");
+    function _matchOrder(
+        address artistTokenAddress,
+        bool isBuyOrder,
+        uint256 prophetAmount,
+        uint256 artistTokenAmount,
+        uint256 pricePerToken
+    ) internal returns (uint256 remainingProphetAmount, uint256 remainingArtistAmount) {
+        remainingProphetAmount = prophetAmount;
+        remainingArtistAmount = artistTokenAmount;
         
-        Order storage order = orders[orderId];
-        require(order.active, "Order is not active");
+        // Get opposite orders (if creating buy order, look for sell orders and vice versa)
+        uint256[] memory oppositeOrders = artistTokenOrders[artistTokenAddress][!isBuyOrder];
         
+        for (uint256 i = 0; i < oppositeOrders.length && remainingArtistAmount > 0; i++) {
+            uint256 orderId = oppositeOrders[i];
+            Order storage order = orders[orderId];
+            
+            if (!order.active) continue;
+            
+            // Check if prices match (buy order price >= sell order price)
+            bool priceMatch = isBuyOrder ? 
+                pricePerToken >= order.pricePerToken : 
+                pricePerToken <= order.pricePerToken;
+                
+            if (!priceMatch) continue;
+            
+            // Calculate how much can be filled
+            uint256 orderRemainingArtist = order.artistTokenAmount - order.filled;
+            
+            uint256 fillArtistAmount = remainingArtistAmount < orderRemainingArtist ? 
+                remainingArtistAmount : orderRemainingArtist;
+            uint256 fillProphetAmount = (fillArtistAmount * order.pricePerToken) / PRICE_SCALE;
+            
+            if (fillProphetAmount > remainingProphetAmount) {
+                fillProphetAmount = remainingProphetAmount;
+                fillArtistAmount = (fillProphetAmount * PRICE_SCALE) / order.pricePerToken;
+            }
+            
+            // Execute the trade
+            _executeTrade(order, fillArtistAmount, fillProphetAmount, isBuyOrder);
+            
+            // Update remaining amounts
+            remainingArtistAmount -= fillArtistAmount;
+            remainingProphetAmount -= fillProphetAmount;
+        }
+    }
+
+    /**
+     * @dev Execute a trade between two parties
+     */
+    function _executeTrade(
+        Order storage order,
+        uint256 fillArtistAmount,
+        uint256 fillProphetAmount,
+        bool takerIsBuyer
+    ) internal {
+        // Update order filled amount
         if (order.isBuyOrder) {
-            // This is a buy order, so the filler is selling artist tokens
-            uint256 artistTokensToTransfer = fillAmount;
-            require(artistTokensToTransfer > 0, "Fill amount too small");
-            
-            // Calculate the corresponding Prophet tokens
-            uint256 prophetTokensToReceive = (artistTokensToTransfer * order.prophetAmount) / order.artistTokenAmount;
-            
-            // Check if we have enough unfilled amount
-            uint256 remainingArtistTokens = order.artistTokenAmount - order.filled;
-            require(artistTokensToTransfer <= remainingArtistTokens, "Fill amount exceeds remaining order");
-            
-            // Update filled amount
-            order.filled += artistTokensToTransfer;
-            
-            // Transfer tokens
-            IERC20(order.artistToken).safeTransferFrom(msg.sender, order.creator, artistTokensToTransfer);
-            prophetToken.transfer(msg.sender, prophetTokensToReceive);
-            
-            // Check if order is completely filled
-            if (order.filled == order.artistTokenAmount) {
-                order.active = false;
-            }
+            order.filled += fillArtistAmount;
         } else {
-            // This is a sell order, so the filler is buying artist tokens with Prophet
-            uint256 prophetTokensToTransfer = fillAmount;
-            require(prophetTokensToTransfer > 0, "Fill amount too small");
-            
-            // Calculate the corresponding artist tokens
-            uint256 artistTokensToReceive = (prophetTokensToTransfer * order.artistTokenAmount) / order.prophetAmount;
-            
-            // Check if we have enough unfilled amount
-            uint256 remainingProphetTokens = order.prophetAmount - order.filled;
-            require(prophetTokensToTransfer <= remainingProphetTokens, "Fill amount exceeds remaining order");
-            
-            // Update filled amount
-            order.filled += prophetTokensToTransfer;
-            
-            // Transfer tokens
-            prophetToken.transferFrom(msg.sender, order.creator, prophetTokensToTransfer);
-            IERC20(order.artistToken).safeTransfer(msg.sender, artistTokensToReceive);
-            
-            // Check if order is completely filled
-            if (order.filled == order.prophetAmount) {
-                order.active = false;
-            }
+            order.filled += fillProphetAmount;
         }
         
-        emit OrderFilled(orderId, msg.sender, fillAmount);
+        // Transfer tokens based on who is buying/selling
+        if (takerIsBuyer) {
+            // Taker is buying, order creator is selling
+            prophetToken.transferFrom(msg.sender, order.creator, fillProphetAmount);
+            IERC20(order.artistToken).safeTransfer(msg.sender, fillArtistAmount);
+        } else {
+            // Taker is selling, order creator is buying
+            IERC20(order.artistToken).safeTransferFrom(msg.sender, order.creator, fillArtistAmount);
+            prophetToken.transfer(msg.sender, fillProphetAmount);
+        }
+        
+        // Check if order is completely filled
+        bool orderComplete = order.isBuyOrder ? 
+            order.filled >= order.artistTokenAmount : 
+            order.filled >= order.prophetAmount;
+            
+        if (orderComplete) {
+            order.active = false;
+        }
+        
+        emit Trade(
+            takerIsBuyer ? msg.sender : order.creator,
+            takerIsBuyer ? order.creator : msg.sender,
+            order.artistToken,
+            fillProphetAmount,
+            fillArtistAmount,
+            order.pricePerToken
+        );
+        
+        emit OrderFilled(order.id, msg.sender, takerIsBuyer ? fillArtistAmount : fillProphetAmount, 
+            orderComplete ? 0 : (order.isBuyOrder ? order.artistTokenAmount - order.filled : order.prophetAmount - order.filled));
     }
-    
+
     /**
      * @dev Cancel an existing order
      * @param orderId The ID of the order to cancel
@@ -281,13 +242,13 @@ contract ProphetMarketplace is Permissions, ContractMetadata, ReentrancyGuard {
         // Return the remaining tokens to the creator
         if (order.isBuyOrder) {
             // Return remaining Prophet tokens
-            uint256 remainingProphetTokens = order.prophetAmount * (order.artistTokenAmount - order.filled) / order.artistTokenAmount;
+            uint256 remainingProphetTokens = order.prophetAmount - order.filled;
             if (remainingProphetTokens > 0) {
                 prophetToken.transfer(order.creator, remainingProphetTokens);
             }
         } else {
             // Return remaining artist tokens
-            uint256 remainingArtistTokens = order.artistTokenAmount * (order.prophetAmount - order.filled) / order.prophetAmount;
+            uint256 remainingArtistTokens = order.artistTokenAmount - order.filled;
             if (remainingArtistTokens > 0) {
                 IERC20(order.artistToken).safeTransfer(order.creator, remainingArtistTokens);
             }
@@ -362,35 +323,100 @@ contract ProphetMarketplace is Permissions, ContractMetadata, ReentrancyGuard {
     }
     
     /**
-     * @dev Add liquidity to the marketplace
-     * @param artistTokenAddress The address of the artist token
-     * @param artistTokenAmount The amount of artist tokens to add
+     * @dev Get the best buy price for an artist token
+     * @param artistTokenAddress The artist token to check
+     * @return The highest buy order price (0 if no buy orders)
      */
-    function addArtistTokenLiquidity(
-        address artistTokenAddress,
-        uint256 artistTokenAmount
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(prophetToken.isArtistToken(artistTokenAddress), "Not a registered artist token");
+    function getBestBuyPrice(address artistTokenAddress) external view returns (uint256) {
+        uint256[] memory buyOrders = artistTokenOrders[artistTokenAddress][true];
+        uint256 bestPrice = 0;
         
-        // Transfer artist tokens from admin to this contract
-        IERC20 artistToken = IERC20(artistTokenAddress);
-        artistToken.safeTransferFrom(msg.sender, address(this), artistTokenAmount);
+        for (uint256 i = 0; i < buyOrders.length; i++) {
+            Order storage order = orders[buyOrders[i]];
+            if (order.active && order.pricePerToken > bestPrice) {
+                bestPrice = order.pricePerToken;
+            }
+        }
+        
+        return bestPrice;
     }
     
     /**
-     * @dev Add Prophet token liquidity to the marketplace
-     * @param prophetAmount The amount of Prophet tokens to add
+     * @dev Get the best sell price for an artist token
+     * @param artistTokenAddress The artist token to check
+     * @return The lowest sell order price (0 if no sell orders)
      */
-    function addProphetLiquidity(uint256 prophetAmount) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        prophetToken.transferFrom(msg.sender, address(this), prophetAmount);
+    function getBestSellPrice(address artistTokenAddress) external view returns (uint256) {
+        uint256[] memory sellOrders = artistTokenOrders[artistTokenAddress][false];
+        uint256 bestPrice = type(uint256).max;
+        bool found = false;
+        
+        for (uint256 i = 0; i < sellOrders.length; i++) {
+            Order storage order = orders[sellOrders[i]];
+            if (order.active && order.pricePerToken < bestPrice) {
+                bestPrice = order.pricePerToken;
+                found = true;
+            }
+        }
+        
+        return found ? bestPrice : 0;
     }
     
     /**
-     * @dev Remove liquidity from the marketplace (admin only)
+     * @dev Get market depth for an artist token
+     * @param artistTokenAddress The artist token to check
+     * @return buyVolume Total artist tokens available to buy
+     * @return sellVolume Total artist tokens available to sell
+     * @return bestBuyPrice Highest buy order price
+     * @return bestSellPrice Lowest sell order price
+     */
+    function getMarketDepth(address artistTokenAddress) external view returns (
+        uint256 buyVolume,
+        uint256 sellVolume,
+        uint256 bestBuyPrice,
+        uint256 bestSellPrice
+    ) {
+        uint256[] memory buyOrders = artistTokenOrders[artistTokenAddress][true];
+        uint256[] memory sellOrders = artistTokenOrders[artistTokenAddress][false];
+        
+        bestBuyPrice = 0;
+        bestSellPrice = type(uint256).max;
+        bool sellFound = false;
+        
+        // Calculate buy side
+        for (uint256 i = 0; i < buyOrders.length; i++) {
+            Order storage order = orders[buyOrders[i]];
+            if (order.active) {
+                buyVolume += order.artistTokenAmount - order.filled;
+                if (order.pricePerToken > bestBuyPrice) {
+                    bestBuyPrice = order.pricePerToken;
+                }
+            }
+        }
+        
+        // Calculate sell side
+        for (uint256 i = 0; i < sellOrders.length; i++) {
+            Order storage order = orders[sellOrders[i]];
+            if (order.active) {
+                sellVolume += order.artistTokenAmount - order.filled;
+                if (order.pricePerToken < bestSellPrice) {
+                    bestSellPrice = order.pricePerToken;
+                    sellFound = true;
+                }
+            }
+        }
+        
+        if (!sellFound) {
+            bestSellPrice = 0;
+        }
+    }
+    
+    /**
+     * @dev Emergency function to remove stuck liquidity (admin only)
      * @param token The token address to withdraw
      * @param amount The amount to withdraw
      */
-    function removeLiquidity(
+    function emergencyWithdraw(
         address token,
         uint256 amount
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {

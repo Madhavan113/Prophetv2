@@ -2,41 +2,16 @@
   "name": "Prophet Marketplace Ecosystem",
   "description": "A decentralized marketplace for trading artist tokens using Prophet tokens",
   "version": "1.0.0",
-  "deploy": {
-    "solidity": {
-      "compiler": "0.8.17",
-      "output": "./artifacts",
-      "settings": {
-        "optimizer": {
-          "enabled": true,
-          "runs": 200
-        }
-      }
-    },
-    "target": "sepolia"
-  },
-  "contracts": {
-    "ProphetToken": {
-      "contractType": "token",
-      "name": "Prophet Token",
-      "symbol": "PROPHET",
-      "deploy": true,
-      "network": "sepolia",
-      "isDeploymentChainIdRequired": true
-    },
-    "ArtistTokenFactory": {
-      "contractType": "factory",
-      "name": "Artist Token Factory",
-      "deploy": true,
-      "network": "sepolia",
-      "isDeploymentChainIdRequired": true
-    },
-    "ProphetMarketplace": {
-      "contractType": "marketplace",
-      "name": "Prophet Marketplace",
-      "deploy": true,
-      "network": "base-sepolia",
-      "isDeploymentChainIdRequired": true
+  "solidity": {
+    "version": "0.8.20",
+    "settings": {
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "viaIR": true
     }
-  }
+  },
+  "sources": "./contracts",
+  "artifacts": "./artifacts"
 } 
