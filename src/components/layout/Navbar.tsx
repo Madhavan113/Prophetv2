@@ -24,12 +24,12 @@ function ProphetTokenBalance() {
     tokenAddress: PROPHET_TOKEN_ADDRESS,
   });
 
-  // Refresh balance every 10 seconds
+  // Refresh balance every 30 seconds instead of 10 seconds
   React.useEffect(() => {
     if (account?.address) {
       const interval = setInterval(() => {
         refetch();
-      }, 10000);
+      }, 30000); // Changed from 10000 to 30000 (30 seconds)
       return () => clearInterval(interval);
     }
   }, [account?.address, refetch]);

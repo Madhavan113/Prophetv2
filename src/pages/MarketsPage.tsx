@@ -15,9 +15,11 @@ import { useBlockchainEvents } from "@/hooks/useBlockchainEvents";
 import TradingInterface from "@/components/trading/TradingInterface";
 
 const BONDING_CURVE_ADDRESS = "0xAF9f3c79c6b8B051bc02cBCB0ab0a19eA2057d07";
-const PRICE_POLLING_INTERVAL = 3000; // 3 seconds as recommended
+const PRICE_POLLING_INTERVAL = 10000; // Changed from 3000 to 10000 (10 seconds)
 const MAX_PRICE_HISTORY = 50; // Keep last 50 price points for smooth charts
 const PRICE_COMPARISON_INTERVAL = 300000; // 5 minutes for price change calculation
+const MAX_CONCURRENT_REQUESTS = 3; // Limit concurrent API requests
+const REQUEST_DELAY = 200; // Delay between requests in ms
 
 // Real-time market data interfaces
 interface TokenPriceData {
@@ -70,6 +72,8 @@ const MarketsPage: React.FC = () => {
   const price24hAgoCache = useRef<Map<string, bigint>>(new Map());
   const priceComparisonIntervals = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const fiveMinutePriceSnapshots = useRef<Map<string, { price: bigint; timestamp: number }>>(new Map());
+  const requestQueue = useRef<Array<() => Promise<void>>>([]);
+  const isProcessingQueue = useRef(false);
 
   const { allArtistTokens, tokensLoading } = useTokenExplorer();
   const { tokenCreatedEvents, isLoading: eventsLoading } = useBlockchainEvents();
@@ -105,8 +109,32 @@ const MarketsPage: React.FC = () => {
     signature: "event ArtistTokenSold(address indexed seller, address indexed artistToken, uint256 artistAmount, uint256 prophetAmount, uint256 newSupply)"
   });
 
-  // Real-time price tracking for a specific token
-  const startPriceTracking = useCallback((tokenAddress: string) => {
+  // Process request queue with rate limiting
+  const processRequestQueue = useCallback(async () => {
+    if (isProcessingQueue.current || requestQueue.current.length === 0) return;
+    
+    isProcessingQueue.current = true;
+    
+    while (requestQueue.current.length > 0) {
+      const batch = requestQueue.current.splice(0, MAX_CONCURRENT_REQUESTS);
+      
+      try {
+        await Promise.all(batch.map(fn => fn()));
+      } catch (error) {
+        console.error('Batch request error:', error);
+      }
+      
+      // Add delay between batches
+      if (requestQueue.current.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, REQUEST_DELAY));
+      }
+    }
+    
+    isProcessingQueue.current = false;
+  }, []);
+
+  // Real-time price tracking for a specific token with rate limiting
+  const startPriceTracking = useCallback((tokenAddress: string, staggerDelay: number = 0) => {
     // Clear existing interval
     const existingInterval = priceIntervals.current.get(tokenAddress);
     if (existingInterval) {
@@ -122,118 +150,126 @@ const MarketsPage: React.FC = () => {
     const maxRetries = 3;
 
     const fetchPrice = async () => {
-      try {
-        // Fetch real price from bonding curve contract
-        console.log(`Fetching real price for token: ${tokenAddress}`);
-        
-        // Use readContract for read-only calls
-        const { readContract } = await import("thirdweb");
-        const realPrice = await readContract({
-          contract: bondingCurve,
-          method: "function getCurrentPrice(address artistToken) view returns (uint256)",
-          params: [tokenAddress]
-        });
-        
-        console.log(`Real price for ${tokenAddress}:`, realPrice.toString());
-        
-        const now = Date.now();
-        
-        // Store initial price if not set
-        if (!initialPriceCache.current.has(tokenAddress)) {
-          initialPriceCache.current.set(tokenAddress, realPrice);
-        }
-        
-        // Store price from 24h ago (or use initial if not enough history)
-        const history = priceHistoryCache.current.get(tokenAddress) || [];
-        const twentyFourHoursAgo = now - (24 * 60 * 60 * 1000);
-        const price24hAgo = history.find(p => p.timestamp <= twentyFourHoursAgo)?.price;
-        
-        if (price24hAgo) {
-          price24hAgoCache.current.set(tokenAddress, BigInt(Math.floor(price24hAgo * 1e18)));
-        } else if (!price24hAgoCache.current.has(tokenAddress)) {
-          // Use initial price as baseline if we don't have 24h history
-          price24hAgoCache.current.set(tokenAddress, initialPriceCache.current.get(tokenAddress) || realPrice);
-        }
-        
-        setTokenPrices(prev => {
-          const newPrices = new Map(prev);
-          const existing = newPrices.get(tokenAddress);
-          const previousPrice = existing?.currentPrice || realPrice;
+      // Add to request queue instead of fetching directly
+      requestQueue.current.push(async () => {
+        try {
+          // Fetch real price from bonding curve contract
+          console.log(`Fetching real price for token: ${tokenAddress}`);
           
-          // Calculate price changes
-          const initialPrice = initialPriceCache.current.get(tokenAddress) || realPrice;
-          const baseline24h = price24hAgoCache.current.get(tokenAddress) || initialPrice;
-          
-          // All-time change from initial price
-          const allTimeChange = Number(realPrice) - Number(initialPrice);
-          const allTimeChangePercent = Number(initialPrice) > 0 ? 
-            (allTimeChange / Number(initialPrice)) * 100 : 0;
-          
-          // 24h change
-          const change24h = Number(realPrice) - Number(baseline24h);
-          const changePercent24h = Number(baseline24h) > 0 ? 
-            (change24h / Number(baseline24h)) * 100 : 0;
-
-          // Update price history with smooth interpolation
-          const history = priceHistoryCache.current.get(tokenAddress) || [];
-          const newPricePoint = {
-            timestamp: now,
-            price: Number(toEther(realPrice))
-          };
-          
-          // Keep last MAX_PRICE_HISTORY points for smooth charts
-          const updatedHistory = [...history, newPricePoint].slice(-MAX_PRICE_HISTORY);
-          priceHistoryCache.current.set(tokenAddress, updatedHistory);
-
-          newPrices.set(tokenAddress, {
-            tokenAddress,
-            currentPrice: realPrice,
-            previousPrice,
-            priceChange: change24h,
-            priceChangePercent: changePercent24h,
-            lastUpdated: now,
-            priceHistory: updatedHistory,
-            isConnected: true,
+          // Use readContract for read-only calls
+          const { readContract } = await import("thirdweb");
+          const realPrice = await readContract({
+            contract: bondingCurve,
+            method: "function getCurrentPrice(address artistToken) view returns (uint256)",
+            params: [tokenAddress]
           });
           
-          return newPrices;
-        });
-
-        setConnectionStatus('connected');
-        setLastGlobalUpdate(now);
-        retryCount = 0; // Reset retry count on success
-        
-      } catch (error) {
-        console.error(`Price fetch error for ${tokenAddress}:`, error);
-        retryCount++;
-        
-        if (retryCount >= maxRetries) {
-          setConnectionStatus('disconnected');
-          // Mark token as disconnected but keep existing data
+          console.log(`Real price for ${tokenAddress}:`, realPrice.toString());
+          
+          const now = Date.now();
+          
+          // Store initial price if not set
+          if (!initialPriceCache.current.has(tokenAddress)) {
+            initialPriceCache.current.set(tokenAddress, realPrice);
+          }
+          
+          // Store price from 24h ago (or use initial if not enough history)
+          const history = priceHistoryCache.current.get(tokenAddress) || [];
+          const twentyFourHoursAgo = now - (24 * 60 * 60 * 1000);
+          const price24hAgo = history.find(p => p.timestamp <= twentyFourHoursAgo)?.price;
+          
+          if (price24hAgo) {
+            price24hAgoCache.current.set(tokenAddress, BigInt(Math.floor(price24hAgo * 1e18)));
+          } else if (!price24hAgoCache.current.has(tokenAddress)) {
+            // Use initial price as baseline if we don't have 24h history
+            price24hAgoCache.current.set(tokenAddress, initialPriceCache.current.get(tokenAddress) || realPrice);
+          }
+          
           setTokenPrices(prev => {
             const newPrices = new Map(prev);
             const existing = newPrices.get(tokenAddress);
-            if (existing) {
-              newPrices.set(tokenAddress, { ...existing, isConnected: false });
-            }
+            const previousPrice = existing?.currentPrice || realPrice;
+            
+            // Calculate price changes
+            const initialPrice = initialPriceCache.current.get(tokenAddress) || realPrice;
+            const baseline24h = price24hAgoCache.current.get(tokenAddress) || initialPrice;
+            
+            // All-time change from initial price
+            const allTimeChange = Number(realPrice) - Number(initialPrice);
+            const allTimeChangePercent = Number(initialPrice) > 0 ? 
+              (allTimeChange / Number(initialPrice)) * 100 : 0;
+            
+            // 24h change
+            const change24h = Number(realPrice) - Number(baseline24h);
+            const changePercent24h = Number(baseline24h) > 0 ? 
+              (change24h / Number(baseline24h)) * 100 : 0;
+
+            // Update price history with smooth interpolation
+            const history = priceHistoryCache.current.get(tokenAddress) || [];
+            const newPricePoint = {
+              timestamp: now,
+              price: Number(toEther(realPrice))
+            };
+            
+            // Keep last MAX_PRICE_HISTORY points for smooth charts
+            const updatedHistory = [...history, newPricePoint].slice(-MAX_PRICE_HISTORY);
+            priceHistoryCache.current.set(tokenAddress, updatedHistory);
+
+            newPrices.set(tokenAddress, {
+              tokenAddress,
+              currentPrice: realPrice,
+              previousPrice,
+              priceChange: change24h,
+              priceChangePercent: changePercent24h,
+              lastUpdated: now,
+              priceHistory: updatedHistory,
+              isConnected: true,
+            });
+            
             return newPrices;
           });
-        } else {
-          setConnectionStatus('connecting');
-          // Exponential backoff retry
-          setTimeout(fetchPrice, Math.pow(2, retryCount) * 1000);
-          return;
+
+          setConnectionStatus('connected');
+          setLastGlobalUpdate(now);
+          retryCount = 0; // Reset retry count on success
+          
+        } catch (error) {
+          console.error(`Price fetch error for ${tokenAddress}:`, error);
+          retryCount++;
+          
+          if (retryCount >= maxRetries) {
+            setConnectionStatus('disconnected');
+            // Mark token as disconnected but keep existing data
+            setTokenPrices(prev => {
+              const newPrices = new Map(prev);
+              const existing = newPrices.get(tokenAddress);
+              if (existing) {
+                newPrices.set(tokenAddress, { ...existing, isConnected: false });
+              }
+              return newPrices;
+            });
+          } else {
+            setConnectionStatus('connecting');
+            // Exponential backoff retry
+            setTimeout(() => fetchPrice(), Math.pow(2, retryCount) * 1000);
+            return;
+          }
         }
-      }
+      });
+      
+      // Process the queue
+      processRequestQueue();
     };
 
-    // Initial fetch
-    fetchPrice();
+    // Initial fetch with stagger delay
+    setTimeout(() => {
+      fetchPrice();
+    }, staggerDelay);
 
-    // Set up 3-second polling as recommended
+    // Set up polling with staggered intervals
     const interval = setInterval(fetchPrice, PRICE_POLLING_INTERVAL);
     priceIntervals.current.set(tokenAddress, interval);
-  }, []);
+  }, [bondingCurve, processRequestQueue]);
 
   // Fetch historical trades for accurate 24h volume
   const fetchHistoricalTrades = useCallback(async (tokenAddress: string) => {
@@ -381,7 +417,7 @@ const MarketsPage: React.FC = () => {
     }
   }, [bondingCurve, account?.address, startPriceTracking, fetchHistoricalTrades]);
 
-  // Start tracking all tokens when they're available
+  // Start tracking all tokens when they're available with staggered delays
   useEffect(() => {
     console.log('MarketsPage: allArtistTokens changed:', allArtistTokens);
     
@@ -392,14 +428,32 @@ const MarketsPage: React.FC = () => {
 
     console.log('MarketsPage: Starting tracking for', allArtistTokens.length, 'tokens');
     
-    // Start price tracking and event watching for all tokens
-    allArtistTokens.forEach(tokenAddress => {
-      startPriceTracking(tokenAddress);
-      startTradeEventWatching(tokenAddress);
+    // Start price tracking and event watching for all tokens with staggered delays
+    allArtistTokens.forEach((tokenAddress, index) => {
+      // Check if we're already tracking this token
+      if (priceIntervals.current.has(tokenAddress)) {
+        console.log(`Already tracking ${tokenAddress}, skipping...`);
+        return;
+      }
+      
+      // Stagger the initial requests to avoid rate limiting
+      const staggerDelay = index * 500; // 500ms between each token
+      
+      startPriceTracking(tokenAddress, staggerDelay);
+      
+      // Also stagger event watching
+      setTimeout(() => {
+        // Check if we're already watching events for this token
+        if (!eventWatchers.current.has(tokenAddress)) {
+          startTradeEventWatching(tokenAddress);
+        }
+      }, staggerDelay + 250); // Offset by 250ms from price tracking
     });
 
     // Cleanup function
     return () => {
+      console.log('MarketsPage: Cleaning up tracking for', allArtistTokens.length, 'tokens');
+      
       // Clear all price polling intervals
       priceIntervals.current.forEach(interval => clearInterval(interval));
       priceIntervals.current.clear();
@@ -407,8 +461,12 @@ const MarketsPage: React.FC = () => {
       // Clear all event watchers
       eventWatchers.current.forEach(unwatch => unwatch());
       eventWatchers.current.clear();
+      
+      // Clear request queue
+      requestQueue.current = [];
+      isProcessingQueue.current = false;
     };
-  }, [allArtistTokens]); // Remove callback dependencies to prevent infinite loops
+  }, [allArtistTokens.join(',')]); // Use a stable dependency that only changes when the actual tokens change
 
   // Filter tokens based on search and tab
   const filteredTokens = useMemo(() => {

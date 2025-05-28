@@ -79,64 +79,93 @@ const LeaderboardPage: React.FC = () => {
       const { readContract } = await import("thirdweb");
       const { getContract } = await import("thirdweb");
       
-      const data = await Promise.all(
-        allArtistTokens.map(async (tokenAddress) => {
-          try {
-            // Get token contract
-            const tokenContract = getContract({
-              client,
-              chain,
-              address: tokenAddress,
-            });
-            
-            // Fetch token details directly from contract
-            const [name, symbol, totalSupply] = await Promise.all([
-              readContract({
-                contract: tokenContract,
-                method: "function name() view returns (string)"
-              }),
-              readContract({
-                contract: tokenContract,
-                method: "function symbol() view returns (string)"
-              }),
-              readContract({
-                contract: tokenContract,
-                method: "function totalSupply() view returns (uint256)"
-              })
-            ]);
-            
-            // Get price data
-            const priceData = priceDataMap.get(tokenAddress.toLowerCase());
-            
-            // Get reserves (actual market cap)
-            const reserves = await readContract({
-              contract: bondingCurve,
-              method: "function prophetReserves(address) view returns (uint256)",
-              params: [tokenAddress]
-            });
-            
-            const marketCap = reserves ? Number(toEther(reserves)) : 0;
-            
-            return {
-              tokenAddress,
-              name: name || 'Unknown',
-              symbol: symbol || 'UNK',
-              marketCap,
-              totalSupply: totalSupply ? Number(toEther(totalSupply)) : 0,
-              currentPrice: priceData ? Number(toEther(priceData.currentPrice)) : 0
-            };
-          } catch (error) {
-            console.error(`Error fetching market data for ${tokenAddress}:`, error);
-            return null;
-          }
-        })
-      );
+      // Batch requests to avoid rate limiting
+      const BATCH_SIZE = 3;
+      const BATCH_DELAY = 500; // 500ms between batches
       
-      setMarketData(data.filter(d => d !== null && d.marketCap > 0).sort((a, b) => b.marketCap - a.marketCap));
+      const results: Array<{
+        tokenAddress: string;
+        name: string;
+        symbol: string;
+        marketCap: number;
+        totalSupply: number;
+        currentPrice: number;
+      } | null> = [];
+      
+      for (let i = 0; i < allArtistTokens.length; i += BATCH_SIZE) {
+        const batch = allArtistTokens.slice(i, i + BATCH_SIZE);
+        
+        const batchResults = await Promise.all(
+          batch.map(async (tokenAddress) => {
+            try {
+              // Get token contract
+              const tokenContract = getContract({
+                client,
+                chain,
+                address: tokenAddress,
+              });
+              
+              // Fetch token details directly from contract
+              const [name, symbol, totalSupply] = await Promise.all([
+                readContract({
+                  contract: tokenContract,
+                  method: "function name() view returns (string)"
+                }),
+                readContract({
+                  contract: tokenContract,
+                  method: "function symbol() view returns (string)"
+                }),
+                readContract({
+                  contract: tokenContract,
+                  method: "function totalSupply() view returns (uint256)"
+                })
+              ]);
+              
+              // Get price data from cached map
+              const priceData = priceDataMap.get(tokenAddress.toLowerCase());
+              
+              // Get reserves (actual market cap) - this is already cached in priceDataMap
+              const reserves = await readContract({
+                contract: bondingCurve,
+                method: "function prophetReserves(address) view returns (uint256)",
+                params: [tokenAddress]
+              });
+              
+              const marketCap = reserves ? Number(toEther(reserves)) : 0;
+              
+              return {
+                tokenAddress,
+                name: name || 'Unknown',
+                symbol: symbol || 'UNK',
+                marketCap,
+                totalSupply: totalSupply ? Number(toEther(totalSupply)) : 0,
+                currentPrice: priceData ? Number(toEther(priceData.currentPrice)) : 0
+              };
+            } catch (error) {
+              console.error(`Error fetching market data for ${tokenAddress}:`, error);
+              return null;
+            }
+          })
+        );
+        
+        results.push(...batchResults);
+        
+        // Add delay between batches to avoid rate limiting
+        if (i + BATCH_SIZE < allArtistTokens.length) {
+          await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+        }
+      }
+      
+      setMarketData(results.filter(d => d !== null && d.marketCap > 0).sort((a, b) => b.marketCap - a.marketCap));
     };
 
     if (allArtistTokens.length > 0 && bondingCurve) {
-      fetchMarketData();
+      // Debounce the fetch to avoid rapid re-fetches
+      const timeoutId = setTimeout(() => {
+        fetchMarketData();
+      }, 1000);
+      
+      return () => clearTimeout(timeoutId);
     }
   }, [allArtistTokens, priceDataMap, bondingCurve]);
 
