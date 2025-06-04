@@ -1,172 +1,115 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.17;
 
-import "@thirdweb-dev/contracts/extension/Permissions.sol";
-import "./ArtistToken.sol";
-
-// Interface for ProphetToken functions we need
-interface IProphetToken {
-    function hasRole(bytes32 role, address account) external view returns (bool);
-    function DEFAULT_ADMIN_ROLE() external view returns (bytes32);
-    function registerArtistToken(address artistTokenAddress, string memory artistName, uint256 initialProphetValue) external;
-}
-
-// Interface for BondingCurve functions we need
-interface IBondingCurve {
-    function hasRole(bytes32 role, address account) external view returns (bool);
-    function DEFAULT_ADMIN_ROLE() external view returns (bytes32);
-    function initializeCurve(address artistToken, uint256 coefficient, uint256 exponent) external;
-}
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "./ShareToken.sol";
+import "./DutchAuction.sol";
 
 /**
  * @title ArtistTokenFactory
- * @dev Factory contract to create new artist tokens linked to the Prophet ecosystem
+ * @dev Factory contract for deploying ShareToken and DutchAuction for artists
  */
-contract ArtistTokenFactory is Permissions {
-    // Events
-    event ArtistTokenCreated(address indexed artistTokenAddress, string artistName, address creator);
-    
-    // State variables
-    IProphetToken public prophetToken;
-    IBondingCurve public bondingCurve;
-    address[] public createdArtistTokens;
-    
-    // Default curve parameters
-    uint256 public defaultCoefficient = 1e15; // 0.001 Prophet tokens (scaled by 1e18)
-    uint256 public defaultExponent = 2e18;    // k=2 (quadratic curve, scaled by 1e18)
-    
+contract ArtistTokenFactory is Ownable {
+    event ShareTokenAndAuctionCreated(
+        address indexed shareToken,
+        address indexed auction,
+        address indexed artist,
+        string name,
+        string symbol,
+        uint256 totalSupply,
+        uint256 startPrice,
+        uint256 floorPrice,
+        uint256 duration,
+        uint8 decimals
+    );
+
     /**
-     * @dev Constructor for the factory
-     * @param _prophetTokenAddress Address of the Prophet token
-     * @param _bondingCurveAddress Address of the bonding curve contract
+     * @dev Creates a new ShareToken and DutchAuction for an artist
+     * @param name The name of the token
+     * @param symbol The symbol of the token
+     * @param totalSupply The total supply of the token (in token units based on decimals)
+     * @param startPrice The starting price for the auction (in wei)
+     * @param floorPrice The floor price for the auction (in wei)
+     * @param duration The duration of the auction in seconds
+     * @param decimals The number of decimals for the token (default is 18)
+     * @return shareTokenAddr The address of the deployed ShareToken
+     * @return auctionAddr The address of the deployed DutchAuction
      */
-    constructor(address _prophetTokenAddress, address _bondingCurveAddress) {
-        prophetToken = IProphetToken(_prophetTokenAddress);
-        bondingCurve = IBondingCurve(_bondingCurveAddress);
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-    }
-    
-    /**
-     * @dev Create a new artist token with default curve parameters
-     * @param name Token name
-     * @param symbol Token symbol
-     * @param primarySaleRecipient Address to receive proceeds from token sales
-     * @param artistName Name of the artist
-     * @param artistInfo Additional information about the artist
-     * @param initialProphetValue Initial Prophet value for this artist
-     * @return The address of the newly created artist token
-     */
-    function createArtistToken(
+    function createShareTokenAndAuction(
         string memory name,
         string memory symbol,
-        address primarySaleRecipient,
-        string memory artistName,
-        string memory artistInfo,
-        uint256 initialProphetValue
-    ) external returns (address) {
-        return createArtistTokenWithCurve(
+        uint256 totalSupply,
+        uint256 startPrice,
+        uint256 floorPrice,
+        uint256 duration,
+        uint8 decimals
+    ) external onlyOwner returns (address shareTokenAddr, address auctionAddr) {
+        // Validation checks
+        require(totalSupply > 0, "zero supply");
+        require(duration > 0, "zero duration");
+        require(floorPrice < startPrice, "floor>=start");
+        require(decimals <= 18, "decimals too high");
+
+        // Deploy ShareToken with custom decimals
+        ShareToken shareToken = new ShareToken(name, symbol, totalSupply, decimals);
+
+        // Deploy DutchAuction
+        DutchAuction auction = new DutchAuction(
+            address(shareToken),
+            msg.sender,
+            totalSupply,
+            startPrice,
+            floorPrice,
+            duration
+        );
+
+        // First transfer tokens, then ownership - correct ordering
+        shareToken.transferOut(address(auction), totalSupply);
+        shareToken.transferOwnership(address(auction));
+
+        emit ShareTokenAndAuctionCreated(
+            address(shareToken),
+            address(auction),
+            msg.sender,
             name,
             symbol,
-            primarySaleRecipient,
-            artistName,
-            artistInfo,
-            initialProphetValue,
-            defaultCoefficient,
-            defaultExponent
+            totalSupply,
+            startPrice,
+            floorPrice,
+            duration,
+            decimals
         );
+
+        return (address(shareToken), address(auction));
     }
-    
+
     /**
-     * @dev Create a new artist token with custom curve parameters
-     * @param name Token name
-     * @param symbol Token symbol
-     * @param primarySaleRecipient Address to receive proceeds from token sales
-     * @param artistName Name of the artist
-     * @param artistInfo Additional information about the artist
-     * @param initialProphetValue Initial Prophet value for this artist
-     * @param coefficient Bonding curve coefficient (scaled by 1e18)
-     * @param exponent Bonding curve exponent (scaled by 1e18)
-     * @return The address of the newly created artist token
+     * @dev Creates a new ShareToken and DutchAuction for an artist with default 18 decimals
+     * @param name The name of the token
+     * @param symbol The symbol of the token
+     * @param totalSupply The total supply of the token (in wei, 18 decimals)
+     * @param startPrice The starting price for the auction (in wei)
+     * @param floorPrice The floor price for the auction (in wei)
+     * @param duration The duration of the auction in seconds
+     * @return shareTokenAddr The address of the deployed ShareToken
+     * @return auctionAddr The address of the deployed DutchAuction
      */
-    function createArtistTokenWithCurve(
+    function createShareTokenAndAuction(
         string memory name,
         string memory symbol,
-        address primarySaleRecipient,
-        string memory artistName,
-        string memory artistInfo,
-        uint256 initialProphetValue,
-        uint256 coefficient,
-        uint256 exponent
-    ) public returns (address) {
-        // Create a new artist token
-        ArtistToken newArtistToken = new ArtistToken(
+        uint256 totalSupply,
+        uint256 startPrice,
+        uint256 floorPrice,
+        uint256 duration
+    ) external onlyOwner returns (address shareTokenAddr, address auctionAddr) {
+        return createShareTokenAndAuction(
             name,
             symbol,
-            primarySaleRecipient,
-            artistName,
-            artistInfo,
-            address(prophetToken)
+            totalSupply,
+            startPrice,
+            floorPrice,
+            duration,
+            18 // Default to 18 decimals
         );
-        
-        // Store the new token address
-        address artistTokenAddress = address(newArtistToken);
-        createdArtistTokens.push(artistTokenAddress);
-        
-        // Register the token with the Prophet contract if the caller has admin rights
-        if (prophetToken.hasRole(prophetToken.DEFAULT_ADMIN_ROLE(), msg.sender)) {
-            prophetToken.registerArtistToken(artistTokenAddress, artistName, initialProphetValue);
-        }
-        
-        // Initialize bonding curve parameters if the factory has admin rights on the bonding curve
-        if (bondingCurve.hasRole(bondingCurve.DEFAULT_ADMIN_ROLE(), address(this))) {
-            bondingCurve.initializeCurve(artistTokenAddress, coefficient, exponent);
-        }
-        
-        // Set up bonding curve role for the new token
-        newArtistToken.setBondingCurve(address(bondingCurve));
-        
-        // Transfer ownership to the caller
-        newArtistToken.grantRole(newArtistToken.DEFAULT_ADMIN_ROLE(), msg.sender);
-        
-        // If the factory is not the msg.sender, we should revoke our role
-        if (msg.sender != address(this)) {
-            newArtistToken.revokeRole(newArtistToken.DEFAULT_ADMIN_ROLE(), address(this));
-        }
-        
-        emit ArtistTokenCreated(artistTokenAddress, artistName, msg.sender);
-        
-        return artistTokenAddress;
-    }
-    
-    /**
-     * @dev Get all created artist tokens
-     * @return Array of all artist token addresses created by this factory
-     */
-    function getAllArtistTokens() external view returns (address[] memory) {
-        return createdArtistTokens;
-    }
-    
-    /**
-     * @dev Get the total number of created artist tokens
-     * @return Number of artist tokens created
-     */
-    function getArtistTokenCount() external view returns (uint256) {
-        return createdArtistTokens.length;
-    }
-    
-    /**
-     * @dev Set default curve parameters (only admin)
-     * @param coefficient New default coefficient
-     * @param exponent New default exponent
-     */
-    function setDefaultCurveParameters(
-        uint256 coefficient,
-        uint256 exponent
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(coefficient >= 1e12, "Coefficient too small");
-        require(exponent > 0 && exponent <= 10e18, "Invalid exponent");
-        
-        defaultCoefficient = coefficient;
-        defaultExponent = exponent;
     }
 } 
