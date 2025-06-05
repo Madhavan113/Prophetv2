@@ -4,12 +4,16 @@ pragma solidity ^0.8.17;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./ShareToken.sol";
 import "./DutchAuction.sol";
+import "./ProphetMarketplace.sol";
 
 /**
  * @title ArtistTokenFactory
  * @dev Factory contract for deploying ShareToken and DutchAuction for artists
  */
 contract ArtistTokenFactory is Ownable {
+    ProphetMarketplace public marketplace;
+    bool public autoListOnMarketplace;
+
     event ShareTokenAndAuctionCreated(
         address indexed shareToken,
         address indexed auction,
@@ -22,6 +26,20 @@ contract ArtistTokenFactory is Ownable {
         uint256 duration,
         uint8 decimals
     );
+
+    event MarketplaceSet(address marketplace, bool autoList);
+
+    /**
+     * @dev Set the marketplace address and auto-listing preference
+     * @param _marketplace The address of the ProphetMarketplace
+     * @param _autoList Whether to auto-list tokens on the marketplace
+     */
+    function setMarketplace(address _marketplace, bool _autoList) external onlyOwner {
+        require(_marketplace != address(0), "marketplace 0");
+        marketplace = ProphetMarketplace(_marketplace);
+        autoListOnMarketplace = _autoList;
+        emit MarketplaceSet(_marketplace, _autoList);
+    }
 
     /**
      * @dev Creates a new ShareToken and DutchAuction for an artist
@@ -43,7 +61,7 @@ contract ArtistTokenFactory is Ownable {
         uint256 floorPrice,
         uint256 duration,
         uint8 decimals
-    ) external onlyOwner returns (address shareTokenAddr, address auctionAddr) {
+    ) public onlyOwner returns (address shareTokenAddr, address auctionAddr) {
         // Validation checks
         require(totalSupply > 0, "zero supply");
         require(duration > 0, "zero duration");
@@ -66,6 +84,15 @@ contract ArtistTokenFactory is Ownable {
         // First transfer tokens, then ownership - correct ordering
         shareToken.transferOut(address(auction), totalSupply);
         shareToken.transferOwnership(address(auction));
+
+        // Auto-list on marketplace if configured
+        if (autoListOnMarketplace && address(marketplace) != address(0)) {
+            try marketplace.listToken(address(shareToken)) {
+                // Successfully listed
+            } catch {
+                // Failed to list, but we don't want to revert the whole transaction
+            }
+        }
 
         emit ShareTokenAndAuctionCreated(
             address(shareToken),
@@ -102,7 +129,7 @@ contract ArtistTokenFactory is Ownable {
         uint256 floorPrice,
         uint256 duration
     ) external onlyOwner returns (address shareTokenAddr, address auctionAddr) {
-        return createShareTokenAndAuction(
+        return this.createShareTokenAndAuction(
             name,
             symbol,
             totalSupply,
@@ -111,5 +138,14 @@ contract ArtistTokenFactory is Ownable {
             duration,
             18 // Default to 18 decimals
         );
+    }
+
+    /**
+     * @dev Lists an existing token on the marketplace
+     * @param tokenAddress The address of the token to list
+     */
+    function listTokenOnMarketplace(address tokenAddress) external onlyOwner {
+        require(address(marketplace) != address(0), "marketplace not set");
+        marketplace.listToken(tokenAddress);
     }
 } 

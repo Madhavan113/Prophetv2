@@ -1,24 +1,24 @@
 # Prophet Token Ecosystem
 
-This project contains smart contracts for the Prophet token ecosystem, which allows artists to create tokens with intrinsic value tied to the Prophet token. The system features both primary bonding curve markets and secondary order-book trading.
+This project contains smart contracts for the Prophet token ecosystem, which allows artists to create tokens with intrinsic value tied to the Prophet token. The system features Dutch auctions for initial price discovery and an orderbook-based marketplace for trading.
 
 ## Architecture Overview
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   ProphetToken  │◄───┤ ArtistTokenFactory │───►│  ArtistToken    │
+│   ProphetToken  │◄───┤ ArtistTokenFactory │───►│  ShareToken     │
 │   (ERC20)       │    │   (Factory)        │    │   (ERC20)       │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
          ▲                        │                       ▲
          │                        ▼                       │
          │              ┌──────────────────┐              │
-         │              │  BondingCurve    │              │
-         │              │ (Primary AMM)    │──────────────┘
+         │              │  DutchAuction    │              │
+         │              │ (Price Discovery)│──────────────┘
          │              └──────────────────┘
          │
          │              ┌──────────────────┐
          └──────────────┤ProphetMarketplace│
-                        │(Secondary Market)│
+                        │(Orderbook Market)│
                         └──────────────────┘
 ```
 
@@ -28,30 +28,30 @@ This project contains smart contracts for the Prophet token ecosystem, which all
 
 1. **ProphetToken.sol**: The main ERC20 reserve token
    - Sold for ETH to bootstrap the ecosystem
-   - Used as collateral in bonding curves
+   - Used as currency for trading artist tokens
    - Tradeable on secondary markets
 
-2. **ArtistToken.sol**: Per-artist ERC20 tokens
-   - Minted/burned via bonding curve
-   - Tradeable on secondary markets
-   - Role-based permissions for curve interactions
+2. **ShareToken.sol**: Per-artist ERC20 tokens
+   - Initially distributed via Dutch auction
+   - Tradeable on the marketplace
+   - Fixed supply
 
 3. **ArtistTokenFactory.sol**: Factory for creating new artist tokens
-   - Deploys ArtistToken instances
-   - Initializes bonding curve parameters
+   - Deploys ShareToken instances
+   - Creates Dutch auctions for initial distribution
    - Sets up permissions automatically
 
 ### Trading Infrastructure
 
-4. **BondingCurve.sol**: Primary AMM for artist tokens
-   - Implements cost function C(s) = c·s^k
-   - Deterministic pricing based on supply
-   - Holds Prophet token reserves per artist
+4. **DutchAuction.sol**: Initial price discovery for artist tokens
+   - Linear descending price mechanism
+   - Fair distribution to early supporters
+   - ETH proceeds go to the artist
 
-5. **ProphetMarketplace.sol**: Secondary order-book market
+5. **ProphetMarketplace.sol**: Orderbook-based market
    - Limit orders for Prophet ↔ Artist token trading
    - Order matching and partial fills
-   - Independent of bonding curve pricing
+   - Market-driven pricing based on supply and demand
 
 ## Deployment Instructions (using thirdweb)
 
@@ -74,100 +74,83 @@ npx thirdweb deploy
   - Symbol: "PROPHET"
   - Primary sale recipient: [Your wallet address]
 
-2. **Deploy the BondingCurve contract**:
-
-```bash
-npx thirdweb deploy
-```
-
-- Select the `BondingCurve.sol` contract
-- Fill in the constructor parameter:
-  - ProphetTokenAddress: [Address of the deployed Prophet token]
-
-3. **Deploy the Prophet Marketplace contract**:
+2. **Deploy the ProphetMarketplace contract**:
 
 ```bash
 npx thirdweb deploy
 ```
 
 - Select the `ProphetMarketplace.sol` contract
-- Fill in the constructor parameter:
+- Fill in the constructor parameters:
   - ProphetTokenAddress: [Address of the deployed Prophet token]
+  - Admin: [Your wallet address]
 
-4. **Deploy the Artist Token Factory contract**:
+3. **Deploy the Artist Token Factory contract**:
 
 ```bash
 npx thirdweb deploy
 ```
 
 - Select the `ArtistTokenFactory.sol` contract
-- Fill in the constructor parameters:
-  - ProphetTokenAddress: [Address of the deployed Prophet token]
-  - BondingCurveAddress: [Address of the deployed BondingCurve contract]
-
-5. **Set up permissions**:
-
-After deployment, grant the factory admin rights on the bonding curve:
-- Call `grantRole(DEFAULT_ADMIN_ROLE, factoryAddress)` on the BondingCurve contract
+- No additional parameters needed as it inherits Ownable (owner is the deployer)
 
 ## Using the Contracts
 
-### Creating a New Artist Token
+### Creating a New Artist Token with Dutch Auction
 
-1. Call the `createArtistToken` function on the ArtistTokenFactory contract with:
+1. Call the `createShareTokenAndAuction` function on the ArtistTokenFactory contract with:
    - name: Token name (e.g., "Artist Name Token")
    - symbol: Token symbol (e.g., "ANT")
-   - primarySaleRecipient: Address to receive token sales
-   - artistName: Name of the artist
-   - artistInfo: Additional information about the artist
-   - initialProphetValue: Initial Prophet value for this artist (for marketplace)
+   - totalSupply: Total supply of tokens
+   - startPrice: Starting price for the auction (in wei)
+   - floorPrice: Floor price for the auction (in wei)
+   - duration: Duration of the auction in seconds
 
-2. For custom bonding curve parameters, use `createArtistTokenWithCurve`:
-   - coefficient: Curve coefficient c (scaled by 1e18, e.g., 1e15 = 0.001)
-   - exponent: Curve exponent k (scaled by 1e18, e.g., 2e18 = quadratic)
+2. The Dutch auction will start immediately after creation and run for the specified duration.
 
-### Trading on Bonding Curve (Primary Market)
+### Participating in Dutch Auctions
 
-**Buying Artist Tokens:**
+**Bidding in an Auction:**
 ```solidity
-// Get quote first
-uint256 artistAmount = bondingCurve.getBuyQuote(artistTokenAddress, prophetAmount);
-
-// Buy with slippage protection
-bondingCurve.buyArtist(artistTokenAddress, prophetAmount, minArtistAmount);
+// Send ETH to participate
+dutchAuction.bid{value: ethAmount}();
 ```
 
-**Selling Artist Tokens:**
+**Finalizing the Auction:**
 ```solidity
-// Get quote first
-uint256 prophetAmount = bondingCurve.getSellQuote(artistTokenAddress, artistAmount);
-
-// Sell with slippage protection
-bondingCurve.sellArtist(artistTokenAddress, artistAmount, minProphetAmount);
+// Anyone can finalize after the auction ends
+dutchAuction.finalize();
 ```
 
-### Trading on Order Book (Secondary Market)
+**Claiming Refunds:**
+```solidity
+// If you bid too high, claim your refund
+dutchAuction.claimRefund();
+```
+
+### Trading on the Marketplace
 
 **Creating Orders:**
 ```solidity
 // Create buy or sell order
-marketplace.createOrder(
+marketplace.placeOrder(
     artistTokenAddress,
     isBuyOrder,        // true for buy, false for sell
-    prophetAmount,     // Prophet tokens involved
-    artistTokenAmount  // Artist tokens involved
+    price,             // Prophet tokens per share
+    amount             // Artist tokens amount
 );
+```
+
+**Filling Orders:**
+```solidity
+// Take an existing order
+marketplace.take(artistTokenAddress, orderId, amount);
 ```
 
 **Market Information:**
 ```solidity
-// Get best prices
-uint256 bestBuy = marketplace.getBestBuyPrice(artistTokenAddress);
-uint256 bestSell = marketplace.getBestSellPrice(artistTokenAddress);
-
-// Get market depth
-(uint256 buyVol, uint256 sellVol, uint256 bestBuyPrice, uint256 bestSellPrice) = 
-    marketplace.getMarketDepth(artistTokenAddress);
+// Get all orders for a token
+Order[] memory orders = marketplace.getOrders(artistTokenAddress);
 ```
 
 ## Integrating New Artist Markets Step-by-Step
@@ -175,38 +158,26 @@ uint256 bestSell = marketplace.getBestSellPrice(artistTokenAddress);
 ### For Platform Operators
 
 1. **Deploy Core Infrastructure** (once per network):
-   - Deploy ProphetToken, BondingCurve, Factory, and Marketplace
-   - Set up admin permissions between contracts
-
-2. **Configure Default Parameters**:
-   ```solidity
-   factory.setDefaultCurveParameters(
-       1e15,  // coefficient: 0.001 Prophet per token initially
-       2e18   // exponent: quadratic curve (k=2)
-   );
-   ```
+   - Deploy ProphetToken, ArtistTokenFactory, and ProphetMarketplace
+   - Whitelist artist tokens on the marketplace: `marketplace.listToken(artistTokenAddress)`
 
 ### For Artists
 
-1. **Create Artist Token**:
+1. **Create Artist Token and Auction**:
    ```solidity
-   address artistToken = factory.createArtistToken(
+   (address shareToken, address auction) = factory.createShareTokenAndAuction(
        "My Art Token",
        "MYART", 
-       msg.sender,
-       "Artist Name",
-       "Artist bio and information",
-       1000e18  // 1000 Prophet tokens for marketplace value
+       1000000e18,     // 1M tokens
+       0.1 ether,      // Start price
+       0.01 ether,     // Floor price
+       86400           // 24 hours
    );
    ```
 
-2. **Initial Liquidity** (optional):
-   - Artists can buy first tokens from their own curve to establish price history
-   - Or wait for organic discovery and purchases
-
-3. **Marketing Integration**:
-   - Use `getCurrentPrice(artistToken)` to display current bonding curve price
-   - Show both bonding curve and marketplace prices for comparison
+2. **After Auction**:
+   - The artist receives ETH from the auction
+   - Token holders can trade on the marketplace
 
 ### For Traders/Users
 
@@ -215,57 +186,50 @@ uint256 bestSell = marketplace.getBestSellPrice(artistTokenAddress);
    prophetToken.buyTokens{value: ethAmount}(desiredTokenAmount);
    ```
 
-2. **Choose Trading Venue**:
-   - **Bonding Curve**: Guaranteed execution, price based on curve mathematics
-   - **Marketplace**: Better prices possible, but requires liquidity
+2. **Participate in Auctions**:
+   - Send ETH to `auction.bid{value: amount}()`
+   - Receive tokens at the clearing price when auction ends
 
-3. **Price Discovery**:
-   ```solidity
-   // Compare venues
-   uint256 curvePrice = bondingCurve.getCurrentPrice(artistToken);
-   uint256 marketBestBuy = marketplace.getBestBuyPrice(artistToken);
-   uint256 marketBestSell = marketplace.getBestSellPrice(artistToken);
-   ```
+3. **Trade on Marketplace**:
+   - Place buy orders with `marketplace.placeOrder(token, true, price, amount)`
+   - Place sell orders with `marketplace.placeOrder(token, false, price, amount)`
+   - Fill orders with `marketplace.take(token, orderId, amount)`
 
 ## Economic Model
 
-### Bonding Curve Mechanics
-- **Formula**: Cost = ∫[0 to supply] c·s^k ds = c·s^(k+1)/(k+1)
-- **Default**: c = 0.001, k = 2 (quadratic growth)
-- **Price Discovery**: P(s) = c·k·s^(k-1)
+### Dutch Auction Mechanics
+- Starts at high price, descends linearly to floor price
+- Everyone pays the same final clearing price
+- Pro-rata distribution if oversubscribed
+- Refunds processed automatically
 
-### Dual Market Structure
-- **Primary (Curve)**: Always available, predictable pricing
-- **Secondary (Orders)**: Better pricing through trader competition
-- **Arbitrage**: Keeps markets in sync through profit opportunities
+### Orderbook Market Structure
+- Pure supply and demand pricing
+- Maker/taker model with fee incentives
+- 10 bps maker fee + 20 bps taker fee
 
 ## Gas Optimization Notes
 
-- Binary search in curve calculations: ~200k gas for complex curves
-- Order matching: ~150k gas per matched order
-- Token creation: ~3M gas (includes curve setup)
-- Simple buy/sell: ~100-150k gas
+- Order creation: ~120k gas
+- Order filling: ~150k gas per filled order
+- Token creation + auction setup: ~3M gas
+- Auction bidding: ~100k gas
 
 ## Security Considerations
 
-- See [SECURITY.md](./SECURITY.md) for detailed security analysis
-- Slippage protection recommended for all trades
-- Monitor for MEV attacks on large bonding curve trades
+- Slippage protection built into orderbook design
+- Non-custodial trading system (escrow only during active orders)
 - Admin keys should use multi-sig for production deployments
+- All contracts use OpenZeppelin libraries for standard functionality
 
 ## Troubleshooting
 
 ### Compilation Errors
 
 **"Identifier already declared" Error:**
-If you encounter compilation errors related to `IERC20` interface conflicts, this is due to conflicts between OpenZeppelin and Thirdweb contract imports. The contracts have been updated to use interface definitions instead of direct imports to resolve this.
+If you encounter compilation errors related to `IERC20` interface conflicts, this is due to conflicts between OpenZeppelin and Thirdweb contract imports.
 
-**Fixed in Latest Version:**
-- BondingCurve.sol uses `IProphetToken` interface instead of importing ProphetToken.sol
-- ArtistTokenFactory.sol uses interfaces for both ProphetToken and BondingCurve
-- This eliminates IERC20 naming conflicts between dependencies
-
-**If Still Encountering Issues:**
+**If Encountering Issues:**
 1. Clear Hardhat cache: `npx hardhat clean`
 2. Reinstall dependencies: `npm install`
 3. Ensure you're using the latest contract versions
@@ -275,25 +239,4 @@ If using Windows PowerShell, use individual commands instead of chained commands
 ```powershell
 cd Prophetv2/contract
 npx hardhat compile
-```
-
-### Deployment Issues
-
-**Permission Setup:**
-After deploying all contracts, ensure proper permissions are set:
-1. Factory needs admin rights on BondingCurve
-2. BondingCurve needs BONDING_CURVE_ROLE on created ArtistTokens
-3. These are set automatically if factory has proper permissions
-
-**Gas Estimation Failures:**
-- Ensure ProphetToken has sufficient supply before testing trades
-- Check that curve parameters are reasonable (not too high exponents)
-- Verify all contracts are deployed on the same network
-
-## Integration with thirdweb Dashboard
-
-After deployment, you can manage your contracts through the thirdweb dashboard:
-- Monitor token metrics and trading activity
-- Configure admin permissions and roles
-- View transaction history and events
-- Manage emergency functions if needed 
+``` 

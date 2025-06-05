@@ -9,8 +9,6 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
  * @dev Standard ERC20 token for artists, no bonding curve, no ProphetToken logic.
  */
 contract ArtistToken is ERC20, AccessControl {
-    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
-
     string public artistName;
     string public artistInfo;
 
